@@ -11,11 +11,24 @@ import {
   watchPendingConsent,
   grantConsent,
   requestConsentEmail,
+  watchUnassignedCohorts,
+  watchMentoredCohorts,
+  adoptCohort,
+  watchCheckIns,
+  confirmCheckIn,
   type WorkshopInput,
 } from "../../lib/db";
 import { TRACK } from "../../lib/milestones";
 import { LEVELS } from "../../lib/gamify";
-import type { Workshop, Profile } from "../../lib/types";
+import {
+  COHORT_MIN_TO_ACTIVATE,
+  WORKSHOP_MIN_CAPACITY,
+  WORKSHOP_MAX_CAPACITY,
+  WORKSHOP_DEFAULT_CAPACITY,
+  CHECKIN_DEFAULT_MINS,
+  workshopSpots,
+} from "../../lib/types";
+import type { Workshop, Profile, Cohort, CheckIn } from "../../lib/types";
 
 /* datetime-local <-> Date, both in the browser's local timezone. */
 function toLocalInput(d: Date): string {
@@ -25,13 +38,15 @@ function toLocalInput(d: Date): string {
   )}:${pad(d.getMinutes())}`;
 }
 
+/** The authored session. `kind` is gone from the form — office hours are no
+ *  longer a catalog item (they're squad check-ins now), so everything a mentor
+ *  writes here is a capped workshop. */
 type Draft = {
   title: string;
-  mentorName: string;
   description: string;
-  kind: "workshop" | "office_hours";
   startsAt: string; // datetime-local string
   durationMins: number;
+  capacity: number;
   meetLink: string;
   open: boolean;
   levelGate: number;
@@ -39,17 +54,16 @@ type Draft = {
   recordingUrl: string;
 };
 
-function blankDraft(mentorName: string): Draft {
+function blankDraft(): Draft {
   const d = new Date();
   d.setDate(d.getDate() + 7);
   d.setHours(18, 0, 0, 0);
   return {
     title: "",
-    mentorName,
     description: "",
-    kind: "workshop",
     startsAt: toLocalInput(d),
     durationMins: 60,
+    capacity: WORKSHOP_DEFAULT_CAPACITY,
     meetLink: "",
     open: false,
     levelGate: 0,
@@ -61,11 +75,10 @@ function blankDraft(mentorName: string): Draft {
 function draftFrom(w: Workshop): Draft {
   return {
     title: w.title,
-    mentorName: w.mentorName,
     description: w.description ?? "",
-    kind: w.kind,
     startsAt: toLocalInput(w.startsAt.toDate()),
     durationMins: w.durationMins,
+    capacity: w.capacity ?? WORKSHOP_DEFAULT_CAPACITY,
     meetLink: w.meetLink ?? "",
     open: w.open,
     levelGate: w.levelGate,
@@ -74,20 +87,29 @@ function draftFrom(w: Workshop): Draft {
   };
 }
 
+/** mentorName/mentorUid aren't here — db.workshopDoc stamps them from the
+ *  signed-in mentor so the byline always matches the owner. */
 function draftToInput(d: Draft): WorkshopInput {
   return {
     title: d.title.trim(),
-    mentorName: d.mentorName.trim(),
     description: d.description.trim(),
-    kind: d.kind,
+    kind: "workshop",
     startsAt: new Date(d.startsAt),
     durationMins: d.durationMins,
+    capacity: d.capacity,
     meetLink: d.meetLink.trim(),
     open: d.open,
     levelGate: d.levelGate,
     milestoneId: d.milestoneId,
     recordingUrl: d.recordingUrl.trim(),
   };
+}
+
+/** Clamp to the range the rules will accept, so a stray keystroke can't
+ *  produce a write that silently fails. */
+function clampCapacity(n: number): number {
+  if (!Number.isFinite(n)) return WORKSHOP_DEFAULT_CAPACITY;
+  return Math.min(WORKSHOP_MAX_CAPACITY, Math.max(WORKSHOP_MIN_CAPACITY, Math.round(n)));
 }
 
 function fmtWhen(w: Workshop): string {
@@ -116,12 +138,18 @@ function fmtSent(ts: { toDate: () => Date }): string {
 function WorkshopForm({
   draft,
   setDraft,
+  mentorName,
+  taken,
   onSave,
   onCancel,
   busy,
 }: {
   draft: Draft;
   setDraft: (d: Draft) => void;
+  /** Read-only byline — the signed-in mentor, not a text field. */
+  mentorName: string;
+  /** Seats already claimed, so the cap can't be set below the room. */
+  taken: number;
   onSave: () => void;
   onCancel: () => void;
   busy: boolean;
@@ -144,26 +172,23 @@ function WorkshopForm({
       <div className="field-row">
         <div className="field">
           <label>Mentor</label>
-          <input
-            value={draft.mentorName}
-            onChange={(e) => set("mentorName", e.target.value)}
-            maxLength={80}
-          />
+          <input value={mentorName} readOnly disabled />
+          <small className="field__hint">Yours — sessions have owners now.</small>
         </div>
         <div className="field">
-          <label>Kind</label>
-          <div className="chip-row">
-            {(["workshop", "office_hours"] as const).map((k) => (
-              <button
-                key={k}
-                type="button"
-                className={`pick ${draft.kind === k ? "sel" : ""}`}
-                onClick={() => set("kind", k)}
-              >
-                {k === "workshop" ? "Workshop" : "Office hours"}
-              </button>
-            ))}
-          </div>
+          <label>Seats</label>
+          <input
+            type="number"
+            min={WORKSHOP_MIN_CAPACITY}
+            max={WORKSHOP_MAX_CAPACITY}
+            value={draft.capacity}
+            onChange={(e) => set("capacity", clampCapacity(Number(e.target.value)))}
+          />
+          <small className="field__hint">
+            {taken > 0
+              ? `${taken} taken · ${WORKSHOP_MIN_CAPACITY}–${WORKSHOP_MAX_CAPACITY}`
+              : `${WORKSHOP_MIN_CAPACITY}–${WORKSHOP_MAX_CAPACITY}`}
+          </small>
         </div>
       </div>
 
@@ -265,7 +290,7 @@ function WorkshopForm({
         <button
           className="btn btn--primary"
           onClick={onSave}
-          disabled={busy || !draft.title.trim() || !draft.mentorName.trim()}
+          disabled={busy || !draft.title.trim()}
         >
           {busy ? "…" : "Save"}
         </button>
@@ -278,9 +303,21 @@ export default function AdminPage() {
   const { user, profile } = useAuth();
   const router = useRouter();
 
-  const [tab, setTab] = useState<"workshops" | "members">("workshops");
+  const [tab, setTab] = useState<"workshops" | "squads" | "checkins" | "members">(
+    "workshops"
+  );
   const [workshops, setWorkshops] = useState<Workshop[] | null>(null);
   const [pending, setPending] = useState<Profile[] | null>(null);
+  const [unassigned, setUnassigned] = useState<Cohort[] | null>(null);
+  const [mine, setMine] = useState<Cohort[]>([]);
+  // Check-in requests across every squad this mentor owns, keyed by cohort id.
+  const [checkIns, setCheckIns] = useState<Record<string, CheckIn[]>>({});
+  const [adopting, setAdopting] = useState<string | null>(null);
+  // Confirm-a-check-in editor: which one, and the time/link being set.
+  const [confirming, setConfirming] = useState<string | null>(null);
+  const [whenDraft, setWhenDraft] = useState("");
+  const [minsDraft, setMinsDraft] = useState(CHECKIN_DEFAULT_MINS);
+  const [linkDraft, setLinkDraft] = useState("");
 
   const [editingId, setEditingId] = useState<string | null>(null); // null=none, ""=new
   const [draft, setDraft] = useState<Draft | null>(null);
@@ -299,14 +336,33 @@ export default function AdminPage() {
   }, [user, profile, router]);
 
   useEffect(() => {
-    if (!isMentor) return;
+    if (!isMentor || !user) return;
     const u1 = watchAllWorkshops(setWorkshops);
     const u2 = watchPendingConsent(setPending);
+    const u3 = watchUnassignedCohorts(setUnassigned);
+    const u4 = watchMentoredCohorts(user.uid, setMine);
     return () => {
       u1();
       u2();
+      u3();
+      u4();
     };
-  }, [isMentor]);
+  }, [isMentor, user]);
+
+  // One subscription per owned squad — mentors hold a handful, and this keeps
+  // check-in reads on the same squad-scoped rule the squad page uses (no
+  // collection-group query, no extra index). Keyed on the ids rather than the
+  // array so an unrelated field changing on a squad doesn't churn listeners.
+  const mineIds = mine.map((c) => c.id).join(",");
+  useEffect(() => {
+    if (!isMentor || !mineIds) return;
+    const unsubs = mineIds
+      .split(",")
+      .map((id) =>
+        watchCheckIns(id, (list) => setCheckIns((prev) => ({ ...prev, [id]: list })))
+      );
+    return () => unsubs.forEach((u) => u());
+  }, [isMentor, mineIds]);
 
   const sortedPending = useMemo(
     () =>
@@ -314,6 +370,29 @@ export default function AdminPage() {
         (a.country + a.name).localeCompare(b.country + b.name)
       ),
     [pending]
+  );
+
+  /** Only my own sessions are editable — the rules agree, so anything else
+   *  renders read-only rather than offering a button that would 403. */
+  const myWorkshops = useMemo(
+    () => (workshops ?? []).filter((w) => w.mentorUid === user?.uid),
+    [workshops, user]
+  );
+
+  /** Every outstanding request across my squads, oldest first — the queue. */
+  const requests = useMemo(
+    () =>
+      mine
+        .flatMap((c) =>
+          (checkIns[c.id] ?? [])
+            .filter((k) => k.status === "requested")
+            .map((k) => ({ cohort: c, checkIn: k }))
+        )
+        .sort(
+          (a, b) =>
+            (a.checkIn.createdAt?.toMillis() ?? 0) - (b.checkIn.createdAt?.toMillis() ?? 0)
+        ),
+    [mine, checkIns]
   );
 
   if (!user || !profile) return null;
@@ -330,7 +409,7 @@ export default function AdminPage() {
   }
 
   function startNew() {
-    setDraft(blankDraft(profile?.name ?? ""));
+    setDraft(blankDraft());
     setEditingId("");
   }
 
@@ -345,12 +424,17 @@ export default function AdminPage() {
   }
 
   async function save() {
-    if (!draft) return;
+    if (!draft || !profile) return;
     setBusy(true);
     try {
       const input = draftToInput(draft);
-      if (editingId) await updateWorkshop(editingId, input);
-      else await createWorkshop(input);
+      if (editingId) {
+        // Carry the roster through untouched — an edit must never empty seats.
+        const existing = (workshops ?? []).find((w) => w.id === editingId);
+        await updateWorkshop(editingId, input, profile, existing?.enrolledUids ?? []);
+      } else {
+        await createWorkshop(input, profile);
+      }
       cancel();
     } finally {
       setBusy(false);
@@ -360,6 +444,46 @@ export default function AdminPage() {
   async function remove(id: string) {
     if (!confirm("Delete this workshop? This can't be undone.")) return;
     await deleteWorkshop(id).catch(() => {});
+  }
+
+  /** Take a squad on. Assigns me and, at 3+ members, flips it live. */
+  async function adopt(c: Cohort) {
+    if (!profile) return;
+    setAdopting(c.id);
+    try {
+      await adoptCohort(c, profile);
+    } catch {
+      // The only realistic failure is someone else adopting it first; the feed
+      // is live, so it disappears on its own.
+    } finally {
+      setAdopting(null);
+    }
+  }
+
+  function startConfirm(k: CheckIn) {
+    const d = new Date();
+    d.setDate(d.getDate() + 2);
+    d.setHours(18, 0, 0, 0);
+    setConfirming(k.id);
+    setWhenDraft(toLocalInput(d));
+    setMinsDraft(k.durationMins || CHECKIN_DEFAULT_MINS);
+    setLinkDraft("");
+  }
+
+  async function sendConfirm(cohortId: string, checkInId: string) {
+    setBusy(true);
+    try {
+      await confirmCheckIn(
+        cohortId,
+        checkInId,
+        new Date(whenDraft),
+        minsDraft,
+        linkDraft.trim()
+      );
+      setConfirming(null);
+    } finally {
+      setBusy(false);
+    }
   }
 
   async function resendConsent(uid: string) {
@@ -395,7 +519,19 @@ export default function AdminPage() {
           className={`admin-tab ${tab === "workshops" ? "admin-tab--on" : ""}`}
           onClick={() => setTab("workshops")}
         >
-          Workshops {workshops && `(${workshops.length})`}
+          Workshops {workshops && `(${myWorkshops.length})`}
+        </button>
+        <button
+          className={`admin-tab ${tab === "squads" ? "admin-tab--on" : ""}`}
+          onClick={() => setTab("squads")}
+        >
+          Squads {unassigned && unassigned.length > 0 && `(${unassigned.length})`}
+        </button>
+        <button
+          className={`admin-tab ${tab === "checkins" ? "admin-tab--on" : ""}`}
+          onClick={() => setTab("checkins")}
+        >
+          Check-ins {requests.length > 0 && `(${requests.length})`}
         </button>
         <button
           className={`admin-tab ${tab === "members" ? "admin-tab--on" : ""}`}
@@ -420,6 +556,8 @@ export default function AdminPage() {
             <WorkshopForm
               draft={draft}
               setDraft={setDraft}
+              mentorName={profile.name}
+              taken={0}
               onSave={save}
               onCancel={cancel}
               busy={busy}
@@ -428,16 +566,19 @@ export default function AdminPage() {
 
           {workshops === null ? (
             <p className="empty">Loading…</p>
-          ) : workshops.length === 0 ? (
-            <p className="empty">No workshops yet.</p>
+          ) : myWorkshops.length === 0 ? (
+            <p className="empty">Nothing of yours yet.</p>
           ) : (
             <div className="admin-list">
-              {workshops.map((w) =>
-                editingId === w.id && draft ? (
+              {myWorkshops.map((w) => {
+                const seats = workshopSpots(w);
+                return editingId === w.id && draft ? (
                   <WorkshopForm
                     key={w.id}
                     draft={draft}
                     setDraft={setDraft}
+                    mentorName={profile.name}
+                    taken={seats.taken}
                     onSave={save}
                     onCancel={cancel}
                     busy={busy}
@@ -454,12 +595,14 @@ export default function AdminPage() {
                         {w.levelGate > 0 && (
                           <span className="chip chip--on">L{w.levelGate}+</span>
                         )}
+                        {seats.full && <span className="chip chip--mute">full</span>}
                         {w.recordingUrl && <span className="chip">rec</span>}
                       </div>
                       <span className="admin-row__meta">
                         {fmtWhen(w)} · {w.durationMins}m ·{" "}
-                        {w.kind === "office_hours" ? "Office hours" : "Workshop"} ·{" "}
-                        {w.mentorName}
+                        {seats.capacity === null
+                          ? `${seats.taken} in`
+                          : `${seats.taken}/${seats.capacity} seats`}
                         {w.milestoneId > 0 && ` · M${w.milestoneId}`}
                       </span>
                     </div>
@@ -478,8 +621,148 @@ export default function AdminPage() {
                       </button>
                     </div>
                   </div>
-                )
-              )}
+                );
+              })}
+            </div>
+          )}
+        </section>
+      )}
+
+      {tab === "squads" && (
+        <section className="screen__block">
+          <div className="screen__label">
+            <span className="micro">Needs a mentor</span>
+            {mine.length > 0 && <span className="micro">{mine.length} yours</span>}
+          </div>
+          {unassigned === null ? (
+            <p className="empty">Loading…</p>
+          ) : unassigned.length === 0 ? (
+            <p className="empty">Every squad has a mentor.</p>
+          ) : (
+            <div className="admin-list">
+              {unassigned.map((c) => {
+                const members = c.memberUids?.length ?? 0;
+                const waited = c.createdAt
+                  ? Math.floor((now - c.createdAt.toMillis()) / 86400000)
+                  : null;
+                return (
+                  <div key={c.id} className="tile tile--flat admin-row">
+                    <div className="admin-row__body">
+                      <div className="admin-row__title">
+                        <b>{c.name}</b>
+                        <span className="chip">{members}/8</span>
+                        {members >= COHORT_MIN_TO_ACTIVATE && (
+                          <span className="chip chip--on">ready</span>
+                        )}
+                        {waited !== null && waited >= 7 && (
+                          <span className="chip chip--mute">{waited}d waiting</span>
+                        )}
+                      </div>
+                      <span className="admin-row__meta">{c.mission}</span>
+                      <span className="admin-row__meta">
+                        {(c.tags ?? []).join(" · ") || "no tags"} · {c.meetingSlot}
+                      </span>
+                    </div>
+                    <div className="row-actions" style={{ marginTop: 0 }}>
+                      <button
+                        className="btn btn--verify btn--sm"
+                        disabled={adopting === c.id}
+                        onClick={() => adopt(c)}
+                      >
+                        {adopting === c.id ? "…" : "Take it on"}
+                      </button>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </section>
+      )}
+
+      {tab === "checkins" && (
+        <section className="screen__block">
+          <div className="screen__label">
+            <span className="micro">Your squads want time</span>
+          </div>
+          {mine.length === 0 ? (
+            <p className="empty">No squads yet — take one on.</p>
+          ) : requests.length === 0 ? (
+            <p className="empty">Queue clear.</p>
+          ) : (
+            <div className="admin-list">
+              {requests.map(({ cohort: c, checkIn: k }) => (
+                <div key={k.id} className="tile tile--flat">
+                  <div className="admin-row" style={{ padding: 0 }}>
+                    <div className="admin-row__body">
+                      <div className="admin-row__title">
+                        <b>{c.name}</b>
+                        <span className="chip">{k.requestedByName}</span>
+                      </div>
+                      {k.note && <span className="admin-row__meta">{k.note}</span>}
+                    </div>
+                    {confirming !== k.id && (
+                      <div className="row-actions" style={{ marginTop: 0 }}>
+                        <button
+                          className="btn btn--primary btn--sm"
+                          onClick={() => startConfirm(k)}
+                        >
+                          Set time
+                        </button>
+                      </div>
+                    )}
+                  </div>
+
+                  {confirming === k.id && (
+                    <>
+                      <div className="field-row">
+                        <div className="field">
+                          <label>Starts</label>
+                          <input
+                            type="datetime-local"
+                            value={whenDraft}
+                            onChange={(e) => setWhenDraft(e.target.value)}
+                          />
+                        </div>
+                        <div className="field">
+                          <label>Minutes</label>
+                          <input
+                            type="number"
+                            min={1}
+                            max={600}
+                            value={minsDraft}
+                            onChange={(e) => setMinsDraft(Number(e.target.value))}
+                          />
+                        </div>
+                      </div>
+                      <div className="field">
+                        <label>Meet link</label>
+                        <input
+                          value={linkDraft}
+                          onChange={(e) => setLinkDraft(e.target.value)}
+                          placeholder="https://meet.google.com/…"
+                          maxLength={500}
+                        />
+                      </div>
+                      <div className="row-actions">
+                        <button
+                          className="btn btn--ghost btn--sm"
+                          onClick={() => setConfirming(null)}
+                        >
+                          Cancel
+                        </button>
+                        <button
+                          className="btn btn--verify btn--sm"
+                          disabled={busy || !whenDraft}
+                          onClick={() => sendConfirm(c.id, k.id)}
+                        >
+                          {busy ? "…" : "Confirm"}
+                        </button>
+                      </div>
+                    </>
+                  )}
+                </div>
+              ))}
             </div>
           )}
         </section>

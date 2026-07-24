@@ -190,13 +190,18 @@ const profiles = {
 
 // ─── Cohorts ───────────────────────────────────────────────────────────────
 
+// A squad activates only with 3+ members AND an assigned mentor — mirrors
+// canActivate() in app/lib/types.ts and the gate in firestore.rules. Squads
+// seeded without a mentor stay "forming" on purpose: they're what the mentor
+// approval feed at /admin → Squads has to chew on.
 function cohort({ name, mission, tags, lookingFor, meetingSlot, timezone,
-  founderUid, founderName, members, daysAgo, state }) {
+  founderUid, founderName, members, daysAgo, state, mentorUid, mentorName }) {
   const memberNames = {};
   const memberUids = [founderUid, ...members.map((m) => m.uid)];
   memberNames[founderUid] = s(founderName);
   for (const m of members) memberNames[m.uid] = s(m.name);
-  const autoState = state ?? (memberUids.length >= 3 ? "active" : "forming");
+  const autoState =
+    state ?? (memberUids.length >= 3 && mentorUid ? "active" : "forming");
   return {
     fields: {
       name: s(name),
@@ -208,6 +213,9 @@ function cohort({ name, mission, tags, lookingFor, meetingSlot, timezone,
       state: s(autoState),
       founderUid: s(founderUid),
       founderName: s(founderName),
+      ...(mentorUid
+        ? { mentorUid: s(mentorUid), mentorName: s(mentorName ?? "Josh N.") }
+        : {}),
       peerLeadUid: s(founderUid),
       memberUids: arr(memberUids.map(s)),
       memberNames: map(memberNames),
@@ -234,6 +242,7 @@ const cohorts = {
       { uid: "seed-dev", name: "Dev P." },
       { uid: "seed-lena", name: "Lena F." },
     ],
+    mentorUid: "seed-mentor", mentorName: "Josh N.",
     daysAgo: 21,
   }),
   "seed-first-dollar": cohort({
@@ -261,6 +270,7 @@ const cohorts = {
       { uid: "seed-amara", name: "Amara O." },
       { uid: "seed-jules", name: "Jules M." },
     ],
+    mentorUid: "seed-mentor", mentorName: "Josh N.",
     daysAgo: 10,
   }),
   "seed-cold-start": cohort({
@@ -297,6 +307,7 @@ const cohorts = {
     founderUid: "seed-priya",
     founderName: "Priya S.",
     members: [],
+    mentorUid: "seed-mentor-2", mentorName: "Sarah K.",
     daysAgo: 2,
   }),
 
@@ -378,8 +389,13 @@ const cohorts = {
 
 // ─── Workshops ─────────────────────────────────────────────────────────────
 
-function workshop({ title, mentorName, description, kind, inDays, hour,
-  durationMins, open, levelGate, milestoneId }) {
+// Sessions are owned and capped now. Seeded ones are stamped with a synthetic
+// owner uid so they're shaped like the real thing — no signed-in mentor owns
+// them, so they're read-only in /admin (only their author can edit a session).
+// Office hours are NOT seeded any more: they became squad-scoped check-ins
+// (cohorts/{id}/checkIns) and are no longer a catalog item at all.
+function workshop({ title, mentorName, mentorUid, description, inDays, hour,
+  durationMins, capacity, open, levelGate, milestoneId }) {
   const d = new Date();
   d.setDate(d.getDate() + inDays);
   d.setHours(hour, 0, 0, 0);
@@ -387,11 +403,14 @@ function workshop({ title, mentorName, description, kind, inDays, hour,
     fields: {
       title: s(title),
       mentorName: s(mentorName),
+      mentorUid: s(mentorUid ?? "seed-mentor"),
       description: s(description),
-      kind: s(kind),
+      kind: s("workshop"),
       startsAt: ts(d),
       durationMins: n(durationMins),
       meetLink: s("https://meet.google.com/lookup/high-agency"),
+      capacity: n(capacity ?? 30),
+      enrolledUids: arr([]),
       open: b(open ?? false),
       levelGate: n(levelGate ?? 0),
       milestoneId: n(milestoneId ?? 0),
@@ -405,7 +424,6 @@ const workshops = {
     title: "The Operator Mindset",
     mentorName: "Josh Newall",
     description: "What high agency actually is, picking your mission, the weekly cadence. The season's open workshop — everyone in.",
-    kind: "workshop",
     inDays: 3, hour: 18, durationMins: 60,
     open: true, milestoneId: 1,
   }),
@@ -413,7 +431,6 @@ const workshops = {
     title: "The Art of the Cold Ask",
     mentorName: "Sarah Kim",
     description: "The 5-sentence cold email, rejection math, and the 3-touch follow-up.",
-    kind: "workshop",
     inDays: 10, hour: 18, durationMins: 60,
     milestoneId: 2,
   }),
@@ -421,7 +438,6 @@ const workshops = {
     title: "Talk to Humans",
     mentorName: "Josh Newall",
     description: "The Mom Test in 10 minutes; interviews that don't lie to you.",
-    kind: "workshop",
     inDays: 17, hour: 18, durationMins: 60,
     milestoneId: 3,
   }),
@@ -429,7 +445,6 @@ const workshops = {
     title: "Ship the MVP, part 1: ruthless scoping",
     mentorName: "Josh Newall",
     description: "One core action. Fake doors, concierge MVPs, and other shortcuts.",
-    kind: "workshop",
     inDays: 24, hour: 18, durationMins: 60,
     milestoneId: 4,
   }),
@@ -437,7 +452,6 @@ const workshops = {
     title: "Ship the MVP, part 2: AI leverage + the front door",
     mentorName: "Dev Anand",
     description: "The modern stack, landing pages that convert, capturing intent.",
-    kind: "workshop",
     inDays: 31, hour: 18, durationMins: 60,
     milestoneId: 4,
   }),
@@ -445,7 +459,6 @@ const workshops = {
     title: "Traction From Nothing",
     mentorName: "Sarah Kim",
     description: "The unscalable 10, build-in-public, and feedback loops at zero scale.",
-    kind: "workshop",
     inDays: 38, hour: 18, durationMins: 60,
     milestoneId: 5,
   }),
@@ -453,7 +466,6 @@ const workshops = {
     title: "Partnerships & Leverage (advanced)",
     mentorName: "Josh Newall",
     description: "Who already has your audience, and the pilot proposal that opens doors. Level-gated: L3 Operator+.",
-    kind: "workshop",
     inDays: 45, hour: 18, durationMins: 60,
     levelGate: 3, milestoneId: 6,
   }),
@@ -461,23 +473,8 @@ const workshops = {
     title: "Scale What Works & Tell the Story",
     mentorName: "Josh Newall",
     description: "Reading your numbers and the 3-minute demo-day arc.",
-    kind: "workshop",
     inDays: 52, hour: 18, durationMins: 60,
     milestoneId: 7,
-  }),
-  "seed-oh1": workshop({
-    title: "Office hours",
-    mentorName: "Josh Newall",
-    description: "Bring your blocker. First come, first served.",
-    kind: "office_hours",
-    inDays: 7, hour: 17, durationMins: 45,
-  }),
-  "seed-oh2": workshop({
-    title: "Office hours",
-    mentorName: "Sarah Kim",
-    description: "Bring your blocker. First come, first served.",
-    kind: "office_hours",
-    inDays: 21, hour: 17, durationMins: 45,
   }),
 };
 

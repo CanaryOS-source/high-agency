@@ -460,6 +460,13 @@ export default function CohortsPage() {
                 </div>
                 <AvStack names={c.memberUids.map((u) => c.memberNames[u] ?? "?")} />
                 <p className="sq__mission">{c.mission}</p>
+                <div className="sq__tags">
+                  {c.mentorUid ? (
+                    <span className="chip chip--why">Mentor: {c.mentorName}</span>
+                  ) : (
+                    <span className="chip chip--want">Awaiting mentor</span>
+                  )}
+                </div>
               </Link>
             ))}
           </div>
@@ -524,8 +531,14 @@ export default function CohortsPage() {
                     <SquadRoster uids={c.memberUids} names={c.memberNames} />
                   </div>
                   <p className="sq__mission">{c.mission}</p>
-                  {(why.length > 0 || c.tags.length > 0 || (c.lookingFor ?? []).length > 0) && (
+                  {(why.length > 0 ||
+                    c.tags.length > 0 ||
+                    (c.lookingFor ?? []).length > 0 ||
+                    c.mentorUid) && (
                     <div className="sq__tags">
+                      {c.mentorUid && (
+                        <span className="chip chip--why">Mentor: {c.mentorName}</span>
+                      )}
                       {why.map((w) => (
                         <span key={w} className="chip chip--why">
                           {w}

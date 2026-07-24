@@ -152,6 +152,16 @@ Parent persona is intentionally deferred to Phase 3 (see Phasing). Josh wants a 
 - Edge cases: mentor no-show triggers an apology \+ reschedule flow; over-capacity enrollment moves paid users to a waitlist with auto-promotion.  
 - Error handling: broken Meet link regenerates; reminder delivery failure falls back to in-app notification.  
 - Integration: Google Meet for delivery, calendar invites for scheduling. v1 does not build native in-app video.
+- **As built (supersedes the above for office hours):** the catalog is
+  **workshops only**, and every workshop is **owned** by the mentor who authored
+  it and **capped** at a fixed seat count — over-capacity enrollment is refused
+  at the rules level and shows a "Full" state rather than a waitlist (waitlists
+  with auto-promotion are not built). **Office hours are no longer a catalog
+  item.** They became **squad check-ins**: a squad requests time from *its own
+  assigned mentor* and that mentor sets a time and link; the session is visible
+  only to that squad and that mentor. A squad gets its mentor when one adopts it
+  from the `/admin` feed, and a squad cannot leave `forming` without one. See
+  "Deferred — mentor sessions" in Out of scope.
 
 ### Gamification (free)
 
@@ -179,6 +189,41 @@ Parent persona is intentionally deferred to Phase 3 (see Phasing). Josh wants a 
 - Native mobile app — web-first for v1 (responsive web only).  
 - In-app video conferencing — use Google Meet.  
 - Multi-tier pricing, per-workshop à la carte purchasing, automated scholarship engine, public marketplace — later.
+
+### Deferred — mentor sessions
+
+Decisions taken while restructuring mentor sessions (workshop capacity/ownership,
+squad-scoped check-ins, mentor adoption of squads). Recorded here so the line is
+movable later without re-deriving the reasoning.
+
+- **Unlimited / webinar-style workshops (`capacity: null`) — deferred.** Every
+  authored workshop now carries a required seat cap (2–200), enforced in
+  `firestore.rules` as well as the UI. Uncapped sessions are a different
+  product — a broadcast, not a room where a mentor knows who showed up — and
+  supporting both shapes now would mean a nullable cap threading through
+  enrollment, the "Full" state, and the rules for no batch-1 benefit. Legacy
+  docs written before capacity existed still read as uncapped so nothing
+  breaks; new ones cannot be. Turning this on later is a nullable `capacity`
+  plus one branch in `isSelfEnroll()`.
+- **Server-enforced workshop attendance — still deferred.** The +50 XP for
+  attending a live workshop remains **client-trusted**: the operator taps
+  "I went" and the client writes the XP (the rules bound the size of the
+  increase but not its truth). Real enforcement needs an attendance signal we
+  don't have — Meet participant reports, or a mentor-side roster check — and
+  belongs in a server action alongside the other client-trusted mechanics
+  (streaks, verifier payouts). Squad check-ins pay **no** attendance XP at all,
+  which removes the easiest way to farm it; the weekly ritual (+25) already
+  covers squad↔mentor cadence.
+- **Mentor handoff / unassignment — not built.** A mentor adopts a squad
+  one-way from the `/admin` feed; the rules permit self-assignment only while
+  a squad has no mentor, so nothing can be stolen or reassigned from a client.
+  Reassignment is a staff operation (Admin SDK) until there's demand for it.
+
+**New environment variables** (documented here, not set in this repo):
+`CRON_SECRET` — bearer token Vercel Cron presents to
+`/api/cron/unassigned-squads`; without it the route refuses to run rather than
+defaulting open. Optional: `OPS_EMAIL_TO` (defaults to `info@high-agency.io`).
+Email reuses the existing `RESEND_API_KEY` + `CONSENT_EMAIL_FROM`.
 
 ---
 

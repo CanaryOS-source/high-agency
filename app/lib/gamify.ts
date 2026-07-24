@@ -1,6 +1,7 @@
 import { doc, updateDoc, increment, serverTimestamp } from "firebase/firestore";
 import { getDb } from "./firebase";
 import type { Profile, Workshop } from "./types";
+import { workshopSpots } from "./types";
 
 /* ------------------------------------------------------------------ */
 /* XP economy — ~70% of achievable XP flows through verified           */
@@ -62,8 +63,12 @@ export const BATCH1_ALL_FREE = true;
 
 /** Live workshop access: the open workshop is free for everyone; the
  *  rest are Pro (all free in batch 1). Level gates apply regardless of
- *  plan — access you earn, not buy. */
+ *  plan — access you earn, not buy. A full room beats every other
+ *  answer: the seat simply isn't there (and the rules agree). */
 export function canEnroll(profile: Profile, w: Workshop): { ok: boolean; reason: string } {
+  if (workshopSpots(w).full && !(w.enrolledUids ?? []).includes(profile.uid)) {
+    return { ok: false, reason: "Full" };
+  }
   if (w.levelGate > 0 && levelOf(profile.xp).level < w.levelGate) {
     const gate = LEVELS.find((l) => l.level === w.levelGate);
     return { ok: false, reason: `Unlocks at L${w.levelGate} ${gate?.name ?? ""}`.trim() };

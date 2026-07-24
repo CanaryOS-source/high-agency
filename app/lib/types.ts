@@ -183,6 +183,16 @@ export type CohortState = "forming" | "active" | "stalled" | "archived";
 export const COHORT_MIN_TO_ACTIVATE = 3;
 export const COHORT_MAX_MEMBERS = 8;
 
+/** A squad goes live only when it has a real crew AND a mentor who owns it.
+ *  Milestones 4–7 need a mentor to verify, so activating without one hands a
+ *  squad a track it can't finish. Mirrored in firestore.rules. */
+export function canActivate(c: {
+  memberUids: string[];
+  mentorUid?: string | null;
+}): boolean {
+  return c.memberUids.length >= COHORT_MIN_TO_ACTIVATE && !!c.mentorUid;
+}
+
 export interface Cohort {
   id: string;
   name: string;
@@ -199,6 +209,16 @@ export interface Cohort {
   state: CohortState;
   founderUid: string;
   founderName: string;
+  /** The mentor who adopted this squad from the /admin approval feed.
+   *  Absent until one does — and a squad can't leave `forming` without it
+   *  (see COHORT_MIN_TO_ACTIVATE + canActivate). Mentors verify milestones
+   *  4–7 and take the squad's check-in requests. */
+  mentorUid?: string;
+  mentorName?: string;
+  /** When ops was last emailed that this squad is still unassigned. Written
+   *  only by the Admin SDK (the daily cron) so the same squad doesn't page
+   *  info@high-agency.io every morning forever. */
+  mentorNotifiedAt?: Timestamp;
   /** Verifies milestones 1–3 for the squad (defaults to the founder). */
   peerLeadUid: string;
   memberUids: string[];
@@ -311,12 +331,26 @@ export interface BuildLog {
 export interface Workshop {
   id: string;
   title: string;
+  /** Display name of the owning mentor. Auto-filled from the signed-in
+   *  mentor's profile at author time — never free text. */
   mentorName: string;
+  /** Owner. Stamped from auth on create, immutable after, and the only uid
+   *  the rules let edit or delete this session. Absent on legacy docs —
+   *  treat a missing owner as "nobody can edit it in-app". */
+  mentorUid?: string;
   description: string;
   kind: "workshop" | "office_hours";
   startsAt: Timestamp;
   durationMins: number;
   meetLink: string;
+  /** Seat cap for kind "workshop" — required on every session authored now.
+   *  Absent on legacy docs, which read as uncapped (see workshopSpots).
+   *  Unlimited/webinar-style sessions are deliberately deferred (see prd.md). */
+  capacity?: number;
+  /** Who's in. Lives on the workshop doc so the cap is countable in one read
+   *  and enforceable in the rules; profiles.enrolledWorkshops is a mirror for
+   *  cheap per-user reads, not the source of truth. */
+  enrolledUids?: string[];
   /** The one free "open workshop" per season — everyone can join. */
   open: boolean;
   /** Minimum operator level to enroll (0 = none). Level-gated, not paid-gated. */
@@ -326,3 +360,59 @@ export interface Workshop {
   /** Posted after the session; free after 30 days, immediate for Pro. */
   recordingUrl: string;
 }
+
+/** Allowed seat range for an authored workshop. Below 2 it isn't a workshop
+ *  (it's a check-in); above 200 it isn't a cohort session. Mirrored in
+ *  firestore.rules. */
+export const WORKSHOP_MIN_CAPACITY = 2;
+export const WORKSHOP_MAX_CAPACITY = 200;
+export const WORKSHOP_DEFAULT_CAPACITY = 30;
+
+/** Seat math, tolerant of legacy docs. `capacity: undefined` (pre-capacity
+ *  seeds) reads as uncapped so nothing crashes and nobody is locked out. */
+export function workshopSpots(w: Workshop): {
+  taken: number;
+  capacity: number | null;
+  left: number | null;
+  full: boolean;
+} {
+  const taken = (w.enrolledUids ?? []).length;
+  const capacity = typeof w.capacity === "number" ? w.capacity : null;
+  const left = capacity === null ? null : Math.max(0, capacity - taken);
+  return { taken, capacity, left, full: left !== null && left === 0 };
+}
+
+/* ------------------------------------------------------------------ */
+/* Squad check-ins (what office hours became)                          */
+/* ------------------------------------------------------------------ */
+
+/** A squad-scoped session with the squad's own mentor. Not a catalog item:
+ *  a member requests one, the assigned mentor puts a time + link on it, and
+ *  only that squad plus its mentor can ever see it. Lives at
+ *  `cohorts/{cohortId}/checkIns/{id}` so read scoping is the squad roster. */
+export type CheckInStatus = "requested" | "confirmed";
+
+export interface CheckIn {
+  id: string;
+  cohortId: string;
+  requestedByUid: string;
+  requestedByName: string;
+  /** "What we need help with" — optional, short on purpose. */
+  note: string;
+  status: CheckInStatus;
+  /** The squad's assigned mentor at request time; only they can confirm. */
+  mentorUid: string;
+  mentorName: string;
+  /** Set on confirm. */
+  startsAt: Timestamp | null;
+  durationMins: number;
+  meetLink: string;
+  createdAt?: Timestamp;
+  confirmedAt?: Timestamp | null;
+}
+
+export const CHECKIN_NOTE_MAX = 200;
+export const CHECKIN_DEFAULT_MINS = 30;
+/** Nudge the squad to book one once it's been this long. Nudge only — a
+ *  squad is never blocked or penalised for going quiet. */
+export const CHECKIN_NUDGE_WEEKS = 2;

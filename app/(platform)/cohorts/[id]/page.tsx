@@ -9,6 +9,10 @@ import {
   watchSubmissions,
   watchBuildLogs,
   watchApplications,
+  watchCheckIns,
+  requestCheckIn,
+  withdrawCheckIn,
+  lastCheckInAt,
   submitMilestone,
   decideSubmission,
   addBuildLog,
@@ -18,7 +22,11 @@ import {
 } from "../../../lib/db";
 import { TRACK, squadThreshold } from "../../../lib/milestones";
 import { isoWeek } from "../../../lib/gamify";
-import { DECLINE_LABELS } from "../../../lib/types";
+import {
+  DECLINE_LABELS,
+  CHECKIN_NOTE_MAX,
+  CHECKIN_NUDGE_WEEKS,
+} from "../../../lib/types";
 import { Avatar, AvStack, CheckIcon, FlameIcon } from "../../../components/ui";
 import { ProfileModal } from "../../../components/ProfileModal";
 import type {
@@ -26,9 +34,25 @@ import type {
   CohortApplication,
   MilestoneSubmission,
   BuildLog,
+  CheckIn,
   Profile,
   DeclineReason,
 } from "../../../lib/types";
+
+const WEEK_MS = 7 * 86400000;
+
+/** "3 weeks ago" / "this week" — the whole vocabulary the nudge needs. */
+function weeksAgo(d: Date, now: number): number {
+  return Math.floor((now - d.getTime()) / WEEK_MS);
+}
+
+function fmtWhen(d: Date): string {
+  return (
+    d.toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" }) +
+    " · " +
+    d.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" })
+  );
+}
 
 export default function CohortPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
@@ -39,6 +63,11 @@ export default function CohortPage({ params }: { params: Promise<{ id: string }>
   const [subs, setSubs] = useState<MilestoneSubmission[]>([]);
   const [logs, setLogs] = useState<BuildLog[]>([]);
   const [apps, setApps] = useState<CohortApplication[]>([]);
+  const [checkIns, setCheckIns] = useState<CheckIn[]>([]);
+
+  // Check-in request composer
+  const [asking, setAsking] = useState(false);
+  const [askNote, setAskNote] = useState("");
 
   // Applicant profile viewer (founder reviewing an application). The
   // application carries the squad-specific weekly hours, so we keep it
@@ -59,11 +88,16 @@ export default function CohortPage({ params }: { params: Promise<{ id: string }>
   // Build log composer
   const [logText, setLogText] = useState("");
   const [busy, setBusy] = useState(false);
+  // Captured once on mount — "is this check-in in the past?" needs a clock,
+  // and calling one during render is impure.
+  const [now] = useState(() => Date.now());
 
   const isMember = !!(user && cohort && cohort.memberUids.includes(user.uid));
   const isFounder = !!(user && cohort && cohort.founderUid === user.uid);
   const isPeerLead = !!(user && cohort && cohort.peerLeadUid === user.uid);
   const isMentor = profile?.role === "mentor";
+  /** This squad's own mentor — the only one who can take its check-ins. */
+  const isOurMentor = !!(user && cohort && cohort.mentorUid === user.uid);
 
   useEffect(() => {
     if (user === null) router.replace("/login");
@@ -89,6 +123,12 @@ export default function CohortPage({ params }: { params: Promise<{ id: string }>
     return watchApplications(id, setApps);
   }, [isMember, id]);
 
+  // Check-ins are readable by this squad and its mentor alone.
+  useEffect(() => {
+    if (!isMember && !isOurMentor) return;
+    return watchCheckIns(id, setCheckIns);
+  }, [isMember, isOurMentor, id]);
+
   const byMilestone = useMemo(() => {
     const map = new Map<number, MilestoneSubmission[]>();
     for (const s of subs) {
@@ -113,6 +153,36 @@ export default function CohortPage({ params }: { params: Promise<{ id: string }>
   }, [cohort, byMilestone]);
 
   const ritualDone = cohort?.lastRitualWeek === isoWeek();
+
+  /* ---- Check-ins: what's outstanding, what's booked, how stale ---- */
+  const pendingCheckIn = checkIns.find((c) => c.status === "requested") ?? null;
+  const upcomingCheckIn =
+    checkIns
+      .filter(
+        (c) =>
+          c.status === "confirmed" && c.startsAt && c.startsAt.toDate().getTime() > now
+      )
+      .sort((a, b) => a.startsAt!.toDate().getTime() - b.startsAt!.toDate().getTime())[0] ??
+    null;
+  const lastCheckIn = lastCheckInAt(checkIns, now);
+  const staleWeeks = lastCheckIn ? weeksAgo(lastCheckIn, now) : null;
+  // Nudge only — nothing is blocked or docked for going quiet.
+  const nudge =
+    !pendingCheckIn &&
+    !upcomingCheckIn &&
+    (staleWeeks === null || staleWeeks >= CHECKIN_NUDGE_WEEKS);
+
+  async function sendCheckInRequest() {
+    if (!profile || !cohort) return;
+    setBusy(true);
+    try {
+      await requestCheckIn(cohort, profile, askNote.trim());
+      setAsking(false);
+      setAskNote("");
+    } finally {
+      setBusy(false);
+    }
+  }
 
   async function sendSubmission(milestoneId: number) {
     if (!profile || !evidenceUrl.trim()) return;
@@ -205,6 +275,11 @@ export default function CohortPage({ params }: { params: Promise<{ id: string }>
               {cohort.state === "forming" && " · forming"}
               {cohort.state === "stalled" && " · stalled"}
             </span>
+            {cohort.mentorUid ? (
+              <span className="chip chip--why">Mentor: {cohort.mentorName}</span>
+            ) : (
+              <span className="chip chip--want">Awaiting mentor</span>
+            )}
             {cohort.link && (
               <a
                 className="micro sq__link"
@@ -447,6 +522,137 @@ export default function CohortPage({ params }: { params: Promise<{ id: string }>
           </section>
 
           <div className="stack">
+            {/* ---- Mentor check-ins ---- */}
+            {(isMember || isOurMentor) && (
+              <section className={`tile ${nudge && cohort.mentorUid ? "tile--ember" : ""}`}>
+                <div className="tile__head">
+                  <h2 className="h3">Mentor check-in</h2>
+                  {lastCheckIn ? (
+                    <span className="micro">
+                      {staleWeeks === 0 ? "this week" : `${staleWeeks}w ago`}
+                    </span>
+                  ) : (
+                    <span className="micro">none yet</span>
+                  )}
+                </div>
+
+                {!cohort.mentorUid ? (
+                  <p className="empty" style={{ marginTop: 0 }}>
+                    A mentor picks this squad up soon.
+                  </p>
+                ) : (
+                  <>
+                    {upcomingCheckIn && (
+                      <div className="ses">
+                        <div className="ses__body">
+                          <span className="ses__title">
+                            {fmtWhen(upcomingCheckIn.startsAt!.toDate())}
+                          </span>
+                          <span className="ses__meta">
+                            {upcomingCheckIn.mentorName} · {upcomingCheckIn.durationMins}m
+                          </span>
+                        </div>
+                        {upcomingCheckIn.meetLink && (
+                          <div className="ses__act">
+                            <a
+                              className="btn btn--primary btn--sm"
+                              href={upcomingCheckIn.meetLink}
+                              target="_blank"
+                              rel="noreferrer"
+                            >
+                              Join
+                            </a>
+                          </div>
+                        )}
+                      </div>
+                    )}
+
+                    {pendingCheckIn && (
+                      <div className="ses">
+                        <div className="ses__body">
+                          <span className="ses__title">Waiting on a time</span>
+                          <span className="ses__meta">
+                            asked by {pendingCheckIn.requestedByName}
+                          </span>
+                          {pendingCheckIn.note && (
+                            <p className="path__queue-note">{pendingCheckIn.note}</p>
+                          )}
+                        </div>
+                        {pendingCheckIn.requestedByUid === user.uid && (
+                          <div className="ses__act">
+                            <button
+                              className="btn btn--ghost btn--sm"
+                              onClick={() =>
+                                withdrawCheckIn(id, pendingCheckIn.id).catch(() => {})
+                              }
+                            >
+                              Cancel
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                    )}
+
+                    {isMember && !pendingCheckIn && !asking && (
+                      <>
+                        {nudge && (
+                          <p className="micro" style={{ marginBottom: 10 }}>
+                            {lastCheckIn
+                              ? `Last one ${staleWeeks} weeks ago.`
+                              : "Never met your mentor."}
+                          </p>
+                        )}
+                        <button
+                          className="btn btn--primary btn--sm"
+                          disabled={consentPending}
+                          onClick={() => {
+                            setAsking(true);
+                            setAskNote("");
+                          }}
+                        >
+                          Ask {cohort.mentorName?.split(" ")[0] ?? "mentor"}
+                        </button>
+                      </>
+                    )}
+
+                    {asking && (
+                      <div className="path__form">
+                        <textarea
+                          className="input"
+                          autoFocus
+                          value={askNote}
+                          onChange={(e) => setAskNote(e.target.value)}
+                          placeholder="What do you need help with?"
+                          maxLength={CHECKIN_NOTE_MAX}
+                        />
+                        <div className="row-actions" style={{ marginTop: 0 }}>
+                          <button
+                            className="btn btn--ghost btn--sm"
+                            onClick={() => setAsking(false)}
+                          >
+                            Cancel
+                          </button>
+                          <button
+                            className="btn btn--primary btn--sm"
+                            disabled={busy}
+                            onClick={sendCheckInRequest}
+                          >
+                            {busy ? "…" : "Send"}
+                          </button>
+                        </div>
+                      </div>
+                    )}
+
+                    {isOurMentor && !isMember && !pendingCheckIn && !upcomingCheckIn && (
+                      <p className="empty" style={{ marginTop: 0 }}>
+                        Nothing outstanding.
+                      </p>
+                    )}
+                  </>
+                )}
+              </section>
+            )}
+
             {/* ---- Build log ---- */}
             <section className="tile">
               <div className="tile__head">

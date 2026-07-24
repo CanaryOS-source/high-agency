@@ -62,6 +62,21 @@ export default function HomePage() {
     getUpcomingWorkshops().then(setWorkshops).catch(() => {});
   }, [user]);
 
+  /** Claim a seat and reflect it locally — same reason as the Learn page: the
+   *  week's sessions are fetched once, not watched. */
+  async function enroll(w: Workshop) {
+    if (!profile) return;
+    const result = await enrollWorkshop(profile.uid, w.id).catch(() => "full" as const);
+    if (result === "full") return;
+    setWorkshops((prev) =>
+      prev.map((x) =>
+        x.id === w.id
+          ? { ...x, enrolledUids: [...(x.enrolledUids ?? []), profile.uid] }
+          : x
+      )
+    );
+  }
+
   async function postLog() {
     if (!profile || !cohort || !logText.trim()) return;
     setBusy(true);
@@ -214,8 +229,8 @@ export default function HomePage() {
               <WeekCal
                 workshops={workshops}
                 profile={profile}
-                onEnroll={(w) => enrollWorkshop(profile.uid, w.id).catch(() => {})}
-                onAttend={(w) => markAttended(profile, w.id).catch(() => {})}
+                onEnroll={enroll}
+                onAttend={(w) => markAttended(profile, w).catch(() => {})}
               />
             </section>
           </div>
@@ -239,8 +254,8 @@ export default function HomePage() {
               <WeekCal
                 workshops={workshops}
                 profile={profile}
-                onEnroll={(w) => enrollWorkshop(profile.uid, w.id).catch(() => {})}
-                onAttend={(w) => markAttended(profile, w.id).catch(() => {})}
+                onEnroll={enroll}
+                onAttend={(w) => markAttended(profile, w).catch(() => {})}
               />
             </section>
           )}

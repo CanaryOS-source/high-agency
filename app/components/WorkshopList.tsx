@@ -1,8 +1,18 @@
 "use client";
 
 import type { Profile, Workshop } from "../lib/types";
+import { workshopSpots } from "../lib/types";
 import { canEnroll } from "../lib/gamify";
 import { CheckIcon, LockIcon } from "./ui";
+
+/** Seats left, shown everywhere a session renders. Silent when the session
+ *  is uncapped (legacy docs only) or the viewer already holds a seat. */
+export function SeatChip({ w }: { w: Workshop }) {
+  const { left, full } = workshopSpots(w);
+  if (left === null) return null;
+  if (full) return <span className="chip chip--mute">Full</span>;
+  return <span className="chip chip--want">{left} left</span>;
+}
 
 function dateParts(ts: { toDate: () => Date }): { day: string; mon: string; time: string } {
   const d = ts.toDate();
@@ -26,9 +36,14 @@ export function SessionAction({
   onEnroll?: (w: Workshop) => void;
   onAttend?: (w: Workshop) => void;
 }) {
-  const enrolled = profile.enrolledWorkshops.includes(w.id);
+  // The workshop doc is authoritative for seats; the profile mirror is the
+  // fallback for legacy enrollments made before the roster moved onto the doc.
+  const enrolled =
+    (w.enrolledUids ?? []).includes(profile.uid) ||
+    profile.enrolledWorkshops.includes(w.id);
   const attended = profile.attendedWorkshops.includes(w.id);
   const gate = canEnroll(profile, w);
+  const full = workshopSpots(w).full;
   const started = w.startsAt.toDate().getTime() < Date.now() + w.durationMins * 60000;
 
   if (attended)
@@ -56,6 +71,12 @@ export function SessionAction({
         Enroll
       </button>
     );
+  if (full)
+    return (
+      <span className="ses__lock" title="Every seat is taken">
+        Full
+      </span>
+    );
   return (
     <span className="ses__lock" title={gate.reason}>
       <LockIcon /> L{w.levelGate}
@@ -78,7 +99,9 @@ export function WorkshopList({
   return (
     <div>
       {workshops.map((w) => {
-        const enrolled = profile.enrolledWorkshops.includes(w.id);
+        const enrolled =
+          (w.enrolledUids ?? []).includes(profile.uid) ||
+          profile.enrolledWorkshops.includes(w.id);
         const attended = profile.attendedWorkshops.includes(w.id);
         const { day, mon, time } = dateParts(w.startsAt);
 
@@ -92,6 +115,7 @@ export function WorkshopList({
               <span className="ses__title">
                 {w.title}
                 {w.levelGate > 0 && <span className="chip chip--on">L{w.levelGate}+</span>}
+                {!enrolled && <SeatChip w={w} />}
               </span>
               <span className="ses__meta">
                 {time} · {w.mentorName}

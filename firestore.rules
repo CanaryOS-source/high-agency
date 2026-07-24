@@ -26,13 +26,20 @@ service cloud.firestore {
     //
     // Collection: cohorts/{id} — accountability squads (3–8 operators).
     //   Founder manages the doc; any member may update only the weekly
-    //   ritual streak fields. peerLead verifies milestones 1–3.
+    //   ritual streak fields. peerLead verifies milestones 1–3. A squad is
+    //   adopted by exactly one mentor (mentorUid), who verifies 4–7 and takes
+    //   its check-ins — and a squad cannot reach state 'active' without both
+    //   3+ members and that mentor.
     //   Subcollections:
     //     applications/{applicantUid} — pitch + status + declineReason
     //     submissions/{milestoneId_uid} — per-operator milestone evidence
     //     logs/{auto} — build log entries (the squad's pulse)
+    //     checkIns/{auto} — squad↔mentor sessions, visible to that squad only
     //
-    // Collection: workshops — staff-seeded; read-only for clients.
+    // Collection: workshops — mentor-authored catalog, readable by every
+    //   signed-in user. Each doc is OWNED (mentorUid) and CAPPED (capacity);
+    //   the roster lives on the doc (enrolledUids) so the cap is enforceable
+    //   here, and an operator may only ever add their own uid to it.
     //
     // ===============================================================
     // Helpers
@@ -82,6 +89,13 @@ service cloud.firestore {
 
     function isCohortPeerLead(cohortId) {
       return isAuthenticated() && request.auth.uid == cohortData(cohortId).peerLeadUid;
+    }
+
+    // The mentor who adopted this squad. Legacy squads have no mentorUid at
+    // all, so read it defensively — absent means nobody holds the role.
+    function isCohortMentor(cohortId) {
+      return isAuthenticated() &&
+        request.auth.uid == cohortData(cohortId).get('mentorUid', '');
     }
 
     function isMentor() {
@@ -234,6 +248,7 @@ service cloud.firestore {
     function isValidCohort(data) {
       return hasOnlyAllowedFields(['name', 'mission', 'tags', 'lookingFor', 'meetingSlot',
                'link', 'icon', 'timezone', 'state', 'founderUid', 'founderName', 'peerLeadUid',
+               'mentorUid', 'mentorName', 'mentorNotifiedAt',
                'memberUids', 'memberNames', 'open', 'weeklyStreak', 'lastRitualWeek', 'createdAt']) &&
              hasRequiredFields(['name', 'mission', 'meetingSlot', 'timezone', 'state',
                'founderUid', 'founderName', 'peerLeadUid',
@@ -259,14 +274,42 @@ service cloud.firestore {
                 (data.icon == '' || data.icon.matches('data:image/.*')))) &&
              validString(data.timezone, 1, 60) &&
              data.state in ['forming', 'active', 'stalled', 'archived'] &&
+             // ACTIVATION GATE: a squad only goes live with a real crew AND a
+             // mentor who owns it. Milestones 4–7 need a mentor to verify, so
+             // activating unassigned hands a squad a track it can't finish.
+             // Mirrors canActivate() in app/lib/types.ts.
+             (data.state != 'active' ||
+               (data.memberUids.size() >= 3 && data.get('mentorUid', '') != '')) &&
              data.founderUid is string &&
              validString(data.founderName, 1, 80) &&
+             (!('mentorUid' in data) || data.mentorUid is string) &&
+             (!('mentorName' in data) || validString(data.mentorName, 0, 80)) &&
+             (!('mentorNotifiedAt' in data) || data.mentorNotifiedAt is timestamp) &&
              data.peerLeadUid is string &&
              validStringList(data.memberUids, 8) && data.memberUids.size() >= 1 &&
              data.memberNames is map && data.memberNames.size() <= 8 &&
              data.open is bool &&
              data.weeklyStreak is number && data.weeklyStreak >= 0 && data.weeklyStreak <= 1000 &&
              (!('lastRitualWeek' in data) || validString(data.lastRitualWeek, 0, 8));
+    }
+
+    // A mentor adopts an UNCLAIMED squad from the /admin feed: they write
+    // themselves in as its mentor and, if the crew is already ≥3, flip it live
+    // in the same write. Deliberately one-way — the condition is "no mentor
+    // yet", so no client can steal or reassign a squad that already has one,
+    // and a mentor can't hand one off from the app (handoff stays a staff
+    // operation). No cap on squads per mentor.
+    function isMentorAdopt() {
+      return isMentor() &&
+             resource.data.get('mentorUid', '') == '' &&
+             request.resource.data.diff(resource.data).affectedKeys()
+               .hasOnly(['mentorUid', 'mentorName', 'state']) &&
+             request.resource.data.mentorUid == request.auth.uid &&
+             validString(request.resource.data.mentorName, 1, 80) &&
+             (request.resource.data.state == resource.data.state ||
+              (resource.data.state == 'forming' &&
+               request.resource.data.state == 'active' &&
+               resource.data.memberUids.size() >= 3));
     }
 
     // Any member may log the weekly ritual — only those two fields.
@@ -293,14 +336,19 @@ service cloud.firestore {
                        request.resource.data.weeklyStreak == 0;
 
       // Founder manages the doc; founder must stay a member and the
-      // peer-lead must be a member. Members may only tick the ritual.
+      // peer-lead must be a member. Mentor assignment is NOT the founder's to
+      // make — it moves only through isMentorAdopt (or the Admin SDK), so a
+      // founder can't appoint themselves a mentor and self-activate. Members
+      // may only tick the ritual.
       allow update: if consentAllows(request.auth.uid) &&
                        ((isCohortFounder(cohortId) &&
                         isValidCohort(request.resource.data) &&
-                        areImmutableFieldsUnchanged(['founderUid', 'founderName', 'createdAt']) &&
+                        areImmutableFieldsUnchanged(['founderUid', 'founderName', 'createdAt',
+                          'mentorUid', 'mentorName', 'mentorNotifiedAt']) &&
                         request.resource.data.founderUid in request.resource.data.memberUids &&
                         request.resource.data.peerLeadUid in request.resource.data.memberUids) ||
-                       (isCohortMember(cohortId) && isRitualUpdate()));
+                       (isCohortMember(cohortId) && isRitualUpdate()) ||
+                       isMentorAdopt());
 
       allow delete: if false;
 
@@ -394,6 +442,63 @@ service cloud.firestore {
         allow delete: if false;
       }
 
+      // ---------------- Squad check-ins ----------------
+      // What "office hours" became. A check-in is squad-scoped, not a catalog
+      // item: any member requests one, the squad's ASSIGNED mentor puts a time
+      // and a link on it, and it is readable ONLY by that squad's members and
+      // that mentor. Note the read rule here is deliberately narrower than the
+      // one on submissions/logs — a check-in is a private conversation with
+      // one squad, so a mentor who doesn't own the squad can't see it either.
+
+      function isValidCheckIn(data) {
+        return hasOnlyAllowedFields(['cohortId', 'requestedByUid', 'requestedByName',
+                 'note', 'status', 'mentorUid', 'mentorName', 'startsAt',
+                 'durationMins', 'meetLink', 'createdAt', 'confirmedAt']) &&
+               hasRequiredFields(['cohortId', 'requestedByUid', 'requestedByName',
+                 'status', 'mentorUid', 'createdAt']) &&
+               data.cohortId == cohortId &&
+               validString(data.requestedByName, 1, 80) &&
+               (!('note' in data) || validString(data.note, 0, 200)) &&
+               data.status in ['requested', 'confirmed'] &&
+               data.mentorUid is string &&
+               (!('mentorName' in data) || validString(data.mentorName, 0, 80)) &&
+               (!('durationMins' in data) ||
+                 (data.durationMins is number && data.durationMins > 0 && data.durationMins <= 600)) &&
+               (!('meetLink' in data) || validString(data.meetLink, 0, 500));
+      }
+
+      match /checkIns/{checkInId} {
+        allow read: if isCohortMember(cohortId) || isCohortMentor(cohortId);
+
+        // Request one as yourself, always starting unscheduled, and only when
+        // the squad actually has a mentor to receive it.
+        allow create: if isCohortMember(cohortId) &&
+                         consentAllows(request.auth.uid) &&
+                         isValidCheckIn(request.resource.data) &&
+                         request.resource.data.requestedByUid == request.auth.uid &&
+                         request.resource.data.status == 'requested' &&
+                         request.resource.data.startsAt == null &&
+                         cohortData(cohortId).get('mentorUid', '') != '' &&
+                         request.resource.data.mentorUid == cohortData(cohortId).mentorUid;
+
+        // Only the assigned mentor confirms, only from 'requested', and only
+        // by adding a time + link. Everything else on the doc is frozen.
+        allow update: if isCohortMentor(cohortId) &&
+                         resource.data.status == 'requested' &&
+                         request.resource.data.diff(resource.data).affectedKeys()
+                           .hasOnly(['status', 'startsAt', 'durationMins', 'meetLink', 'confirmedAt']) &&
+                         request.resource.data.status == 'confirmed' &&
+                         request.resource.data.startsAt is timestamp &&
+                         request.resource.data.durationMins is number &&
+                         request.resource.data.durationMins > 0 &&
+                         request.resource.data.durationMins <= 600 &&
+                         validString(request.resource.data.meetLink, 0, 500);
+
+        // The requester may withdraw while it's still just a request.
+        allow delete: if isOwner(resource.data.requestedByUid) &&
+                         resource.data.status == 'requested';
+      }
+
       // ---------------- Build log ----------------
 
       match /logs/{logId} {
@@ -419,28 +524,67 @@ service cloud.firestore {
     // ===============================================================
 
     function isValidWorkshop(data) {
-      return hasOnlyAllowedFields(['title', 'mentorName', 'description', 'kind',
-               'startsAt', 'durationMins', 'meetLink', 'open', 'levelGate',
-               'milestoneId', 'recordingUrl']) &&
-             hasRequiredFields(['title', 'mentorName', 'kind', 'startsAt',
+      return hasOnlyAllowedFields(['title', 'mentorName', 'mentorUid', 'description', 'kind',
+               'startsAt', 'durationMins', 'meetLink', 'capacity', 'enrolledUids',
+               'open', 'levelGate', 'milestoneId', 'recordingUrl']) &&
+             hasRequiredFields(['title', 'mentorName', 'mentorUid', 'kind', 'startsAt',
                'durationMins', 'open', 'levelGate', 'milestoneId']) &&
              validString(data.title, 1, 120) &&
              validString(data.mentorName, 1, 80) &&
+             data.mentorUid is string &&
              (!('description' in data) || validString(data.description, 0, 1000)) &&
              data.kind in ['workshop', 'office_hours'] &&
              data.startsAt is timestamp &&
              data.durationMins is number && data.durationMins > 0 && data.durationMins <= 600 &&
              (!('meetLink' in data) || validString(data.meetLink, 0, 500)) &&
+             // Capacity is REQUIRED for kind 'workshop' (2–200 seats) and
+             // meaningless for the legacy office_hours kind. Uncapped /
+             // webinar-style sessions are deliberately deferred — see prd.md.
+             (data.kind != 'workshop' ||
+               (data.capacity is number && data.capacity >= 2 && data.capacity <= 200)) &&
+             (!('enrolledUids' in data) || validStringList(data.enrolledUids, 200)) &&
              data.open is bool &&
              data.levelGate is number && data.levelGate >= 0 && data.levelGate <= 5 &&
              data.milestoneId is number && data.milestoneId >= 0 && data.milestoneId <= 7 &&
              (!('recordingUrl' in data) || validString(data.recordingUrl, 0, 500));
     }
 
+    // A signed-in user claims exactly ONE seat — their own — and touches
+    // nothing else on the doc. Airtight because all four hold at once:
+    //   hasAll(old)      → no existing enrollee can be dropped
+    //   size == old + 1  → exactly one uid was added
+    //   uid in new       → and it is the caller's own
+    //   size <= capacity → the room can't be oversold
+    // Legacy docs with no capacity read as uncapped rather than unenrollable.
+    function isSelfEnroll() {
+      return isAuthenticated() &&
+             request.resource.data.diff(resource.data).affectedKeys().hasOnly(['enrolledUids']) &&
+             request.resource.data.enrolledUids is list &&
+             request.resource.data.enrolledUids.hasAll(resource.data.get('enrolledUids', [])) &&
+             request.resource.data.enrolledUids.size() ==
+               resource.data.get('enrolledUids', []).size() + 1 &&
+             request.auth.uid in request.resource.data.enrolledUids &&
+             !(request.auth.uid in resource.data.get('enrolledUids', [])) &&
+             (!('capacity' in resource.data) ||
+              request.resource.data.enrolledUids.size() <= resource.data.capacity);
+    }
+
+    // Sessions have owners now. A mentor authors their own catalog and can
+    // only edit or delete what they authored — mentors no longer reach into
+    // each other's sessions. mentorUid is stamped from auth on create and
+    // frozen after, so ownership can't be transferred or forged client-side.
     match /workshops/{id} {
       allow read: if isAuthenticated();
-      allow create, update: if isMentor() && isValidWorkshop(request.resource.data);
-      allow delete: if isMentor();
+      allow create: if isMentor() &&
+                       isValidWorkshop(request.resource.data) &&
+                       request.resource.data.mentorUid == request.auth.uid &&
+                       request.resource.data.get('enrolledUids', []).size() == 0;
+      allow update: if (isMentor() &&
+                        resource.data.get('mentorUid', '') == request.auth.uid &&
+                        isValidWorkshop(request.resource.data) &&
+                        areImmutableFieldsUnchanged(['mentorUid'])) ||
+                       isSelfEnroll();
+      allow delete: if isMentor() && resource.data.get('mentorUid', '') == request.auth.uid;
     }
 
     // ===============================================================

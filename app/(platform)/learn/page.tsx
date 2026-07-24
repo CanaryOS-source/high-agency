@@ -19,6 +19,8 @@ export default function LearnPage() {
 
   const [workshops, setWorkshops] = useState<Workshop[] | null>(null);
   const [recordings, setRecordings] = useState<Workshop[]>([]);
+  // Seat feedback when someone loses the race for the last spot.
+  const [seatErr, setSeatErr] = useState("");
 
   useEffect(() => {
     if (user === null) router.replace("/login");
@@ -30,6 +32,33 @@ export default function LearnPage() {
     getUpcomingWorkshops().then(setWorkshops).catch(() => setWorkshops([]));
     getPastWorkshops().then(setRecordings).catch(() => setRecordings([]));
   }, [user]);
+
+  /** Claim a seat, then reflect it locally — the catalog is fetched once, not
+   *  watched, so the roster on screen has to be moved by hand. A "full" result
+   *  means someone else took the last seat between load and click. */
+  async function enroll(w: Workshop) {
+    if (!profile) return;
+    setSeatErr("");
+    try {
+      const result = await enrollWorkshop(profile.uid, w.id);
+      if (result === "full") {
+        setSeatErr(`"${w.title}" just filled up.`);
+        // Pull the real roster so the row shows Full instead of inviting
+        // another click that can only fail.
+        getUpcomingWorkshops().then(setWorkshops).catch(() => {});
+        return;
+      }
+      setWorkshops((prev) =>
+        (prev ?? []).map((x) =>
+          x.id === w.id
+            ? { ...x, enrolledUids: [...(x.enrolledUids ?? []), profile.uid] }
+            : x
+        )
+      );
+    } catch {
+      setSeatErr("Couldn't get you in. Try again.");
+    }
+  }
 
   if (!user || !profile) return null;
 
@@ -52,10 +81,11 @@ export default function LearnPage() {
           <WorkshopList
             workshops={workshops}
             profile={profile}
-            onEnroll={(w) => enrollWorkshop(profile.uid, w.id).catch(() => {})}
-            onAttend={(w) => markAttended(profile, w.id).catch(() => {})}
+            onEnroll={enroll}
+            onAttend={(w) => markAttended(profile, w).catch(() => {})}
           />
         )}
+        {seatErr && <p className="form-err">{seatErr}</p>}
       </section>
 
       {recordings.length > 0 && (
