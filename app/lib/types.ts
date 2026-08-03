@@ -366,7 +366,7 @@ export interface Workshop {
  *  firestore.rules. */
 export const WORKSHOP_MIN_CAPACITY = 2;
 export const WORKSHOP_MAX_CAPACITY = 200;
-export const WORKSHOP_DEFAULT_CAPACITY = 30;
+export const WORKSHOP_DEFAULT_CAPACITY = 15;
 
 /** Seat math, tolerant of legacy docs. `capacity: undefined` (pre-capacity
  *  seeds) reads as uncapped so nothing crashes and nobody is locked out. */

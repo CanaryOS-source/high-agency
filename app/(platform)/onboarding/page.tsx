@@ -82,10 +82,12 @@ export default function OnboardingPage() {
   // race the post-submit redirect into cohort discovery.
   const submitted = useRef(false);
 
-  // Signed out → login. Already onboarded → dashboard.
+  // Signed out → login. Already onboarded → whichever app is theirs.
   useEffect(() => {
     if (user === null) router.replace("/login");
-    else if (profile && !submitted.current) router.replace("/dashboard");
+    else if (profile && !submitted.current) {
+      router.replace(profile.role === "mentor" ? "/mentor" : "/dashboard");
+    }
   }, [user, profile, router]);
 
   // Prefill name from the Google account so it rarely has to be typed.

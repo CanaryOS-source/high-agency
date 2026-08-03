@@ -25,6 +25,8 @@ export default function LearnPage() {
   useEffect(() => {
     if (user === null) router.replace("/login");
     else if (user && profile === null) router.replace("/onboarding");
+    // Mentors run sessions; they don't enroll in them.
+    else if (profile?.role === "mentor") router.replace("/mentor/workshops");
   }, [user, profile, router]);
 
   useEffect(() => {

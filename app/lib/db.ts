@@ -20,6 +20,7 @@ import {
   arrayRemove,
   Timestamp,
   type Unsubscribe,
+  type FirestoreError,
 } from "firebase/firestore";
 import { getDb, getFirebaseAuth } from "./firebase";
 import type {
@@ -40,6 +41,22 @@ import { XP, localDay, isoWeek, touchStreak } from "./gamify";
 import { milestone } from "./milestones";
 
 export const MAX_PENDING_APPLICATIONS = 3;
+
+export type ListenerErrorHandler = (e: FirestoreError) => void;
+
+/** Error path for a snapshot listener. Without one, the SDK throws the failure
+ *  as an uncaught error — and, worse, a listener that trips a security rule is
+ *  torn down permanently and never retries, so the screen silently shows "no
+ *  data" forever. Callers that can recover pass their own handler. */
+function listenerError(
+  label: string,
+  onError?: ListenerErrorHandler
+): ListenerErrorHandler {
+  return (e) => {
+    if (onError) onError(e);
+    else console.warn(`[db] ${label} listener stopped (${e.code})`);
+  };
+}
 
 /* ---------------- Profiles ---------------- */
 
@@ -83,7 +100,7 @@ export function watchProfile(
 ): Unsubscribe {
   return onSnapshot(doc(getDb(), "profiles", uid), (snap) => {
     cb(snap.exists() ? normalizeProfile(uid, snap.data()) : null);
-  });
+  }, listenerError(`profiles/${uid}`));
 }
 
 export async function saveProfile(
@@ -160,7 +177,7 @@ export function watchCohort(
 ): Unsubscribe {
   return onSnapshot(doc(getDb(), "cohorts", id), (snap) => {
     cb(snap.exists() ? ({ id: snap.id, ...snap.data() } as Cohort) : null);
-  });
+  }, listenerError(`cohorts/${id}`));
 }
 
 /** Creation requires a committed weekly slot — deliberate friction that
@@ -226,17 +243,23 @@ export async function markRitual(cohort: Cohort, profile: Profile): Promise<void
 
 /* ---------------- Mentor adoption ---------------- */
 
+/** How many of the newest squads the approval feed scans for "no mentor yet".
+ *  Firestore can't query for an absent field, so the filter runs client-side
+ *  over a bounded window instead of the whole collection. Batch 1 is ~10
+ *  squads; if the platform ever outgrows this window, the fix is a stored
+ *  `mentorUid: null` (or a `needsMentor` flag) that can be queried directly —
+ *  not a bigger scan. */
+export const UNASSIGNED_SCAN_LIMIT = 100;
+
 /** The mentor approval feed: every squad nobody has adopted yet. Read
- *  client-side rather than queried — Firestore can't ask for "field absent",
- *  and legacy squads predate the field entirely. The list is capped at 50 by
- *  watchCohorts-style bounds; batch 1 is ~10 squads. */
+ *  client-side rather than queried — see UNASSIGNED_SCAN_LIMIT. */
 export function watchUnassignedCohorts(
   cb: (cohorts: Cohort[]) => void
 ): Unsubscribe {
   const q = query(
     collection(getDb(), "cohorts"),
     orderBy("createdAt", "desc"),
-    limit(100)
+    limit(UNASSIGNED_SCAN_LIMIT)
   );
   return onSnapshot(q, (snap) => {
     cb(
@@ -278,18 +301,25 @@ export async function adoptCohort(cohort: Cohort, mentor: Profile): Promise<void
 
 /* ---------------- Squad check-ins (what office hours became) --------- */
 
+/** Check-ins are the narrowest read in the app: this squad's members and its
+ *  assigned mentor, nobody else. That makes the listener genuinely deniable
+ *  (see the adopt race handled in components/mentorData.ts), so `onError` is
+ *  worth passing here. */
 export function watchCheckIns(
   cohortId: string,
-  cb: (checkIns: CheckIn[]) => void
+  cb: (checkIns: CheckIn[]) => void,
+  onError?: ListenerErrorHandler
 ): Unsubscribe {
   const q = query(
     collection(getDb(), "cohorts", cohortId, "checkIns"),
     orderBy("createdAt", "desc"),
     limit(30)
   );
-  return onSnapshot(q, (snap) => {
-    cb(snap.docs.map((d) => ({ id: d.id, ...d.data() }) as CheckIn));
-  });
+  return onSnapshot(
+    q,
+    (snap) => cb(snap.docs.map((d) => ({ id: d.id, ...d.data() }) as CheckIn)),
+    listenerError(`checkIns/${cohortId}`, onError)
+  );
 }
 
 /** Any member asks the squad's mentor for a check-in. The note is optional
@@ -424,7 +454,7 @@ export function watchApplications(
   );
   return onSnapshot(q, (snap) => {
     cb(snap.docs.map((d) => d.data() as CohortApplication));
-  });
+  }, listenerError(`applications/${cohortId}`));
 }
 
 /** Founder decision. Accepting also adds the applicant to the roster and
@@ -466,11 +496,14 @@ function submissionId(milestoneId: number, uid: string): string {
 
 export function watchSubmissions(
   cohortId: string,
-  cb: (subs: MilestoneSubmission[]) => void
+  cb: (subs: MilestoneSubmission[]) => void,
+  onError?: ListenerErrorHandler
 ): Unsubscribe {
-  return onSnapshot(collection(getDb(), "cohorts", cohortId, "submissions"), (snap) => {
-    cb(snap.docs.map((d) => d.data() as MilestoneSubmission));
-  });
+  return onSnapshot(
+    collection(getDb(), "cohorts", cohortId, "submissions"),
+    (snap) => cb(snap.docs.map((d) => d.data() as MilestoneSubmission)),
+    listenerError(`submissions/${cohortId}`, onError)
+  );
 }
 
 /** Submit (or resubmit — same doc id) evidence for a milestone. A
@@ -547,7 +580,7 @@ export function watchBuildLogs(
   );
   return onSnapshot(q, (snap) => {
     cb(snap.docs.map((d) => ({ id: d.id, ...d.data() }) as BuildLog));
-  });
+  }, listenerError(`logs/${cohortId}`));
 }
 
 /** The cheapest qualifying action: one line keeps the streak alive.
@@ -694,6 +727,49 @@ export function watchAllWorkshops(cb: (workshops: Workshop[]) => void): Unsubscr
   });
 }
 
+/** Every session inside a window, oldest first — what the mentor calendar
+ *  subscribes to for the month on screen. Bounded by the window rather than
+ *  by a page size, so the read cost tracks what's rendered no matter how
+ *  large the catalog grows. Range + orderBy are the same single field, so
+ *  this needs no composite index. */
+export function watchWorkshopsBetween(
+  from: Date,
+  to: Date,
+  cb: (workshops: Workshop[]) => void
+): Unsubscribe {
+  const q = query(
+    collection(getDb(), "workshops"),
+    where("startsAt", ">=", Timestamp.fromDate(from)),
+    where("startsAt", "<", Timestamp.fromDate(to)),
+    orderBy("startsAt", "asc")
+  );
+  return onSnapshot(q, (snap) => {
+    cb(catalogOnly(snap.docs.map((d) => ({ id: d.id, ...d.data() }) as Workshop)));
+  });
+}
+
+/** A mentor's own sessions from now forward — the "what am I running" list.
+ *  Filtered by owner client-side to avoid a composite index on
+ *  (mentorUid, startsAt); the window keeps the read small. */
+export function watchMyUpcomingWorkshops(
+  mentorUid: string,
+  cb: (workshops: Workshop[]) => void
+): Unsubscribe {
+  const q = query(
+    collection(getDb(), "workshops"),
+    where("startsAt", ">", Timestamp.now()),
+    orderBy("startsAt", "asc"),
+    limit(50)
+  );
+  return onSnapshot(q, (snap) => {
+    cb(
+      catalogOnly(snap.docs.map((d) => ({ id: d.id, ...d.data() }) as Workshop)).filter(
+        (w) => w.mentorUid === mentorUid
+      )
+    );
+  });
+}
+
 function workshopDoc(input: WorkshopInput, mentor: Profile) {
   return {
     title: input.title,
@@ -749,16 +825,24 @@ export async function deleteWorkshop(id: string): Promise<void> {
 
 /* ---------------- Admin: member consent (mentors) ---------------- */
 
+/** How many pending-consent rows a mentor sees at once. The queue is meant to
+ *  be worked down, not scrolled: an unbounded listener over every pending
+ *  minor would grow with the intake batch. Callers surface the truncation
+ *  rather than pretending the page is the whole queue. */
+export const CONSENT_QUEUE_LIMIT = 50;
+
 /** Operators awaiting parental consent — the mentor's approval queue.
- *  Single-field equality query (no composite index); sorted client-side. */
+ *  Single-field equality query (no composite index); sorted client-side.
+ *  Deliberately capped — see CONSENT_QUEUE_LIMIT. */
 export function watchPendingConsent(cb: (profiles: Profile[]) => void): Unsubscribe {
   const q = query(
     collection(getDb(), "profiles"),
-    where("consentStatus", "==", "pending")
+    where("consentStatus", "==", "pending"),
+    limit(CONSENT_QUEUE_LIMIT)
   );
   return onSnapshot(q, (snap) => {
     cb(snap.docs.map((d) => normalizeProfile(d.id, d.data())));
-  });
+  }, listenerError(`pendingConsent`));
 }
 
 /** Mentor grants parental consent — flips a pending minor to granted,

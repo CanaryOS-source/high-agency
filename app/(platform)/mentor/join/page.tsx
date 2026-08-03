@@ -21,9 +21,14 @@ import { getFirebaseAuth, googleProvider } from "../../../lib/firebase";
 import { useAuth } from "../../../components/AuthProvider";
 import { peekMentorInvite, redeemMentorInvite } from "../../../lib/db";
 import { localDay } from "../../../lib/gamify";
-import { DOMAINS, SKILLS, normalizeFocusTag, MAX_TAG_LEN } from "../../../lib/types";
+import { DOMAINS, SKILLS } from "../../../lib/types";
 import { COUNTRIES } from "../../../lib/countries";
 import { Bar } from "../../../components/ui";
+import {
+  TagField,
+  MAX_EXPERTISE,
+  MAX_COACH,
+} from "../../../components/TagField";
 import type { VentureStage } from "../../../lib/types";
 
 const STAGES: { id: VentureStage; label: string }[] = [
@@ -33,12 +38,8 @@ const STAGES: { id: VentureStage; label: string }[] = [
   { id: "revenue", label: "Has revenue" },
 ];
 
-// Mentors are niche experts: presets are a starting point, not a ceiling —
-// custom tags replace the catch-all "Other". Caps mirror firestore.rules
-// (domains ≤ 9, skills ≤ 7 — bounded there by validStringList).
+// Presets are a starting point, not a ceiling — TagField carries the caps.
 const EXPERTISE_PRESETS = DOMAINS.filter((d) => d !== "Other");
-const MAX_EXPERTISE = 9;
-const MAX_COACH = 7;
 
 const INVITE_ERRORS: Record<string, string> = {
   invalid: "That code isn't valid. Check the link you were sent.",
@@ -66,107 +67,6 @@ function authErrorMessage(code: string): string {
     default:
       return "Sign-in failed. Try again.";
   }
-}
-
-/** Chip picker with the squad-style "add your own" escape hatch: preset chips,
- *  removable custom chips, and a normalized free-text input behind a "+". */
-function TagField({
-  label,
-  presets,
-  value,
-  max,
-  onChange,
-}: {
-  label: string;
-  presets: readonly string[];
-  value: string[];
-  max: number;
-  onChange: (v: string[]) => void;
-}) {
-  const [draft, setDraft] = useState("");
-  const atCap = value.length >= max;
-  const custom = value.filter((t) => !presets.includes(t));
-
-  function togglePreset(t: string) {
-    onChange(
-      value.includes(t)
-        ? value.filter((x) => x !== t)
-        : atCap
-        ? value
-        : [...value, t]
-    );
-  }
-
-  // Normalize, fold a typed preset name onto its chip, dedupe
-  // case-insensitively, and silently no-op at the cap or on junk input.
-  function addCustom() {
-    const t = normalizeFocusTag(draft);
-    setDraft("");
-    if (!t || atCap) return;
-    const folded = presets.find((p) => p.toLowerCase() === t.toLowerCase()) ?? t;
-    if (value.some((x) => x.toLowerCase() === folded.toLowerCase())) return;
-    onChange([...value, folded]);
-  }
-
-  return (
-    <div className="field">
-      <label>{label}</label>
-      <div className="chip-row">
-        {presets.map((t) => (
-          <button
-            key={t}
-            type="button"
-            className={`pick ${value.includes(t) ? "sel" : ""}`}
-            disabled={!value.includes(t) && atCap}
-            onClick={() => togglePreset(t)}
-          >
-            {t}
-          </button>
-        ))}
-        {custom.map((t) => (
-          <button
-            key={t}
-            type="button"
-            className="pick sel"
-            onClick={() => onChange(value.filter((x) => x !== t))}
-            title="Remove"
-          >
-            {t} ×
-          </button>
-        ))}
-      </div>
-      <div className="tag-add">
-        <input
-          aria-label={`Add your own — ${label}`}
-          value={draft}
-          onChange={(e) => setDraft(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter") {
-              e.preventDefault();
-              addCustom();
-            }
-          }}
-          placeholder="Add your own…"
-          maxLength={MAX_TAG_LEN}
-          disabled={atCap}
-        />
-        <button
-          type="button"
-          className="btn btn--ghost"
-          onClick={addCustom}
-          disabled={atCap || !draft.trim()}
-          aria-label={`Add — ${label}`}
-        >
-          +
-        </button>
-      </div>
-      <small className="field__hint">
-        {atCap
-          ? `That's the max — ${max}.`
-          : `Pick a few or add your own. ${value.length}/${max}.`}
-      </small>
-    </div>
-  );
 }
 
 function MentorJoin() {
@@ -310,7 +210,7 @@ function MentorJoin() {
           : undefined
       );
       if (res.ok) {
-        router.replace("/admin");
+        router.replace("/mentor");
         return;
       }
       if (res.error && INVITE_ERRORS[res.error]) {
@@ -483,12 +383,12 @@ function MentorJoin() {
       <section className="gate">
         <div className="gate__inner">
           <h1 className="h1">You&apos;re already a mentor.</h1>
-          <p className="gate__sub">Nothing to redeem — head to the admin panel.</p>
+          <p className="gate__sub">Nothing to redeem — your squads are waiting.</p>
           <button
             className="btn btn--primary btn--block"
-            onClick={() => router.replace("/admin")}
+            onClick={() => router.replace("/mentor")}
           >
-            Open admin
+            Go to your dashboard
           </button>
         </div>
       </section>

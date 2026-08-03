@@ -87,12 +87,17 @@ not buy"). Don't conflate level gates with paywalls.
   **migrate into Next.js server actions / route handlers** over time rather than staying
   client-trusted. Several v1 mechanics are explicitly "client-trusted v1" (see Gotchas) and
   are the natural first candidates to move server-side.
-- **Admin is split between an in-app panel and local Node scripts.** A **mentor-only in-app
-  admin panel** at `/admin` (`app/(platform)/admin/page.tsx`) now handles workshop CRUD and the
-  parental-consent queue (gated on `role == "mentor"`, enforced by `firestore.rules`). **Break-
-  glass / bootstrap operations still run as local Node scripts** (`scripts/`) — they authenticate
-  with the firebase-tools CLI OAuth token (IAM bypasses security rules), which is how seed/cleanup
-  run and how a mentor can be promoted directly (`admin-set.js <uid> mentor`).
+- **Mentors get their own app, not the operator app plus an admin tab.** There is no `/admin`
+  route. `role == "mentor"` swaps the entire shell: the rail becomes **Home · Workshops ·
+  Squads · You** (`app/(platform)/mentor/**`), the XP/streak HUD is hidden, and every operator
+  surface (`/dashboard`, `/learn`, `/cohorts`, `/profile`) redirects a mentor to its mentor
+  equivalent. The one genuinely shared screen is `/cohorts/[id]` — that's where a mentor
+  verifies milestones 4–7 — and it hides the operator-only affordances (XP labels, build-log
+  composer, ritual button) from them. Mentor screens read their queues through
+  `app/components/mentorData.ts`, so Home and Squads can't disagree about what's outstanding.
+  **Break-glass / bootstrap operations still run as local Node scripts** (`scripts/`) — they
+  authenticate with the firebase-tools CLI OAuth token (IAM bypasses security rules), which is
+  how seed/cleanup run and how a mentor can be promoted directly (`admin-set.js <uid> mentor`).
 - **Mentors onboard via single-use invite links, not the operator funnel.** Staff mints a code
   with `scripts/mentor-invite.js "<label>" [days]` and shares the printed
   `/mentor/join?code=…` URL 1:1. The join page (deliberately unlinked from any nav) validates
@@ -152,10 +157,13 @@ Types live in [`app/lib/types.ts`](app/lib/types.ts); data access in
   marketing** site at `/` (outside the platform shell; writes to the `applications`
   collection via [`app/lib/firebase.ts`](app/lib/firebase.ts) `submitApplication`).
 - `app/(platform)/` — the authenticated **product**, wrapped by
-  [`app/(platform)/layout.tsx`](app/(platform)/layout.tsx) (AuthProvider + sidebar Shell;
-  `/login`, `/onboarding`, and `/mentor/*` render "bare"). Routes: `/login`, `/onboarding`,
-  `/dashboard`, `/cohorts`, `/cohorts/[id]`, `/profile`, `/learn`, `/admin` (mentor-only),
-  and `/mentor/join` (invite-only mentor signup, unlinked from nav).
+  [`app/(platform)/layout.tsx`](app/(platform)/layout.tsx) (AuthProvider + role-aware Shell;
+  only `/login`, `/onboarding`, and `/mentor/join` render "bare"). **Operator routes:**
+  `/dashboard`, `/cohorts`, `/cohorts/[id]`, `/learn`, `/profile`. **Mentor routes:**
+  `/mentor` (home queues), `/mentor/workshops` (month calendar of every session + authoring),
+  `/mentor/squads` (verify queue, check-in requests, adoption feed, consent queue),
+  `/mentor/you` (mentor profile). Plus `/login`, `/onboarding`, and `/mentor/join`
+  (invite-only mentor signup, unlinked from nav).
 - `app/api/` — the server-authoritative Route Handlers (Node, `firebase-admin`, bypass rules):
   `consent/send` + `consent/approve` (parental consent; approval page at `/consent/[token]`)
   and `mentor/peek` + `mentor/redeem` (mentor invites). Server logic lives in
@@ -164,6 +172,10 @@ Types live in [`app/lib/types.ts`](app/lib/types.ts); data access in
 - `app/styleguide/page.tsx` — the living design-system reference (top-level route, `noindex`).
 - `app/components/AuthProvider.tsx` — client auth context (`useAuth()` → `{ user, profile,
   logout }`); `user`/`profile` are `undefined` while resolving, `null` when absent.
+- `app/components/mentorData.ts` — the mentor app's guard + queues (`useMentorGate`,
+  `useMentoredSquads`, `useUnassignedSquads`, `useConsentQueue`). Every mentor screen reads
+  its counts from here; the queues are bounded on purpose (see `CONSENT_QUEUE_LIMIT` and
+  `UNASSIGNED_SCAN_LIMIT` in `db.ts`) and the UI says so when a list is truncated.
 - `app/lib/` — `types.ts`, `firebase.ts` (config + waitlist), `db.ts` (all Firestore CRUD +
   live `watch*` subscriptions), `gamify.ts` (XP/levels/streaks/entitlements), `milestones.ts`
   (the track), `match.ts` (cohort matching), `flags.ts` (`PLATFORM_ENABLED` build-time flag).

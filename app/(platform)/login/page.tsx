@@ -48,10 +48,14 @@ export default function LoginPage() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
 
-  // Already signed in → route past login. Profile decides the destination.
+  // Already signed in → route past login. Profile decides the destination:
+  // no profile means onboarding, and mentors get their own app, not the
+  // operator one.
   useEffect(() => {
     if (user && profile !== undefined) {
-      router.replace(profile ? "/dashboard" : "/onboarding");
+      router.replace(
+        !profile ? "/onboarding" : profile.role === "mentor" ? "/mentor" : "/dashboard"
+      );
     }
   }, [user, profile, router]);
 

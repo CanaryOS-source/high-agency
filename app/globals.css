@@ -829,18 +829,9 @@ button { font-family: inherit; cursor: pointer; border: none; background: none; 
 .consent__fine { margin-top: 20px; font-size: 13px; color: var(--text-faint); line-height: 1.55; }
 
 /* ============================================================
-   ADMIN (mentor console — denser, same pieces)
+   MENTOR CONSOLE — denser rows, same pieces. A mentor's app is a
+   queue of work, not a game board: no HUD, no XP, no levels.
    ============================================================ */
-.admin-tabs { display: flex; gap: 8px; margin-bottom: 24px; flex-wrap: wrap; }
-.admin-tab {
-  font-size: 14px; font-weight: 700; color: var(--text-muted);
-  border: 2px solid var(--border-strong); border-radius: var(--radius-pill);
-  padding: 8px 16px; min-height: 40px; background: var(--surface);
-  box-shadow: 0 3px 0 var(--border-strong);
-  transition: transform 0.09s var(--ease-out), box-shadow 0.09s var(--ease-out);
-}
-.admin-tab:active { transform: translateY(3px); box-shadow: 0 0 0 var(--border-strong); }
-.admin-tab--on { color: var(--accent); border-color: var(--accent-line); background: var(--accent-soft); box-shadow: 0 3px 0 var(--accent-line); }
 .admin-list { display: flex; flex-direction: column; gap: 12px; }
 .admin-row { display: flex; align-items: center; gap: 16px; justify-content: space-between; padding: 16px 18px; }
 .admin-row__body { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
@@ -849,6 +840,108 @@ button { font-family: inherit; cursor: pointer; border: none; background: none; 
 .admin-row__meta { font-size: 13px; color: var(--text-muted); }
 .admin-check { display: flex; align-items: center; gap: 10px; margin: 8px 0; font-size: 14px; color: var(--text-muted); cursor: pointer; }
 .admin-check input { width: 18px; height: 18px; accent-color: var(--accent); }
+/* A session this mentor owns, in a list that also shows other people's. */
+.admin-row--mine { box-shadow: inset 3px 0 0 var(--accent); }
+
+/* A row whose body opens a fuller view — the body is the hit target, so the
+   action button beside it stays independently clickable. */
+.admin-row--tap { transition: border-color var(--t-fast), transform var(--t-fast) var(--ease-out); }
+.admin-row--tap:hover { transform: translateY(-1px); }
+.admin-row__open {
+  flex: 1; min-width: 0; text-align: left; background: none; border: none; padding: 0;
+  display: flex; flex-direction: column; gap: 4px;
+}
+.admin-row__open:hover .admin-row__title b { color: var(--accent); }
+
+/* Inline "why does this say that" marker. The tooltip is the title attribute. */
+.info {
+  display: inline-grid; place-items: center; width: 15px; height: 15px;
+  margin-left: 5px; vertical-align: 1px;
+  font-family: var(--font-mono); font-size: 10px; font-weight: 700; line-height: 1;
+  color: var(--text-faint); border: 1.5px solid var(--border-strong);
+  border-radius: var(--radius-pill); cursor: help;
+}
+.info:hover, .info:focus-visible { color: var(--accent); border-color: var(--accent-line); }
+
+/* Squad dossier: one member per row, each opening a full profile. */
+.modal__card--wide { max-width: 640px; }
+.mem {
+  display: flex; align-items: flex-start; gap: 12px; width: 100%; text-align: left;
+  padding: 12px 0; border-top: 2px solid var(--border);
+  transition: color var(--t-fast);
+}
+.mem:first-child { border-top: none; }
+.mem:disabled { cursor: default; }
+.mem__body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.mem__name { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 15px; font-weight: 700; }
+.mem__line { font-size: 13.5px; line-height: 1.45; }
+.mem__more {
+  flex: 0 0 auto; align-self: center;
+  font-family: var(--font-mono); font-size: 11px; color: var(--text-faint); white-space: nowrap;
+}
+.mem:hover:not(:disabled) .mem__name { color: var(--accent); }
+.mem:hover:not(:disabled) .mem__more { color: var(--accent); }
+
+/* ---------- The mentor's "needs you" counters ---------- */
+.mq { display: grid; grid-template-columns: repeat(auto-fit, minmax(184px, 1fr)); gap: 12px; }
+.mq__item { display: flex; flex-direction: column; gap: 2px; padding: 18px 20px; }
+.mq__n { font-family: var(--font-mono); font-size: 30px; font-weight: 700; line-height: 1.1; color: var(--accent); }
+.mq__label { font-size: 14px; color: var(--text-muted); }
+
+/* ---------- Compact squad row (mentor home) ---------- */
+.mrow {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  padding: 12px 0; border-top: 2px solid var(--border);
+}
+.mrow:first-child { border-top: none; padding-top: 0; }
+.mrow__name { font-size: 15px; font-weight: 700; }
+.mrow:hover .mrow__name { color: var(--accent); }
+
+/* ---------- Mentor week calendar ----------
+   Deliberately the *same* vertical week the operator sees (.wcal), so both
+   roles read "how is this week spaced" identically. The mentor version adds
+   a week pager, an ownership tint, and a per-day add. */
+.wknav { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin-bottom: 18px; }
+.wknav__ctl { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.wknav__range { min-width: 12ch; text-align: center; }
+.wknav__legend { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+.wknav__key {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.04em;
+  text-transform: uppercase; color: var(--text-faint);
+}
+.wknav__key::before {
+  content: ""; width: 10px; height: 10px; border-radius: var(--radius-pill);
+  border: 2px solid var(--border-strong); background: var(--surface-3);
+}
+.wknav__key--mine::before { border-color: var(--accent-line); background: var(--accent); }
+
+/* A session this mentor owns — ember, because it's the one they can act on. */
+.wcal__ev--mine {
+  background: var(--accent-soft);
+  border-color: var(--accent-line);
+  box-shadow: 0 3px 0 var(--accent-line);
+}
+.wcal__body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.wcal__body .wcal__title { flex: 0 0 auto; }
+.wcal__by { font-size: 12.5px; color: var(--text-muted); }
+
+/* Empty day: the dotted slot, with the add affordance parked at its end. */
+.wcal__free { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.wcal__free .wcal__nil { flex: 1; margin-right: 0; }
+.wcal__add {
+  flex: 0 0 auto; width: 28px; height: 28px; display: grid; place-items: center;
+  color: var(--text-faint); border: 2px dashed var(--border-strong);
+  border-radius: var(--radius-sm); background: transparent;
+  transition: color var(--t-fast), border-color var(--t-fast), background var(--t-fast);
+}
+.wcal__add:hover { color: var(--accent); border-color: var(--accent-line); background: var(--accent-soft); }
+.wcal__add--inline { width: 100%; height: 26px; }
+
+@media (max-width: 640px) {
+  .wcal__ev { flex-wrap: wrap; }
+  .wcal__act { width: 100%; }
+}
 
 /* ============================================================
    MARKETING — the waitlist page

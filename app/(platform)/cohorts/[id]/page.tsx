@@ -350,7 +350,10 @@ export default function CohortPage({ params }: { params: Promise<{ id: string }>
                       <div className="path__top">
                         <span className="path__name">{m.name}</span>
                         <div className="path__meta">
-                          <span className="xp">+{m.xp}</span>
+                          {/* XP is what an operator earns here. A mentor is
+                              paying it out, and the Verify button already
+                              says how much. */}
+                          {isMember && <span className="xp">+{m.xp}</span>}
                           <span className="path__count">
                             {verified}/{cohort.memberUids.length}
                           </span>
@@ -657,7 +660,7 @@ export default function CohortPage({ params }: { params: Promise<{ id: string }>
             <section className="tile">
               <div className="tile__head">
                 <h2 className="h3">Build log</h2>
-                <span className="xp">+10/day</span>
+                {isMember && <span className="xp">+10/day</span>}
               </div>
               {isMember && (
                 <div className="composer">
@@ -703,7 +706,7 @@ export default function CohortPage({ params }: { params: Promise<{ id: string }>
               <section className="tile tile--ember">
                 <div className="tile__head">
                   <h2 className="h3">Wants in</h2>
-                  <span className="badge badge--level">{apps.length}</span>
+                  <span className="micro">{apps.length}</span>
                 </div>
                 <div className="stack" style={{ gap: 14 }}>
                   {apps.map((a) => (

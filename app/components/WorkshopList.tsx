@@ -77,9 +77,11 @@ export function SessionAction({
         Full
       </span>
     );
+  // The row already carries the "L3+" chip — the lock says *locked*, not the
+  // same number a second time.
   return (
     <span className="ses__lock" title={gate.reason}>
-      <LockIcon /> L{w.levelGate}
+      <LockIcon /> Locked
     </span>
   );
 }

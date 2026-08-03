@@ -16,7 +16,6 @@ const PLATFORM_PREFIXES = [
   "/cohorts",
   "/profile",
   "/learn",
-  "/admin",
   "/mentor",
 ];
 
@@ -52,8 +51,6 @@ export const config = {
     "/profile/:path*",
     "/learn",
     "/learn/:path*",
-    "/admin",
-    "/admin/:path*",
     "/mentor",
     "/mentor/:path*",
   ],

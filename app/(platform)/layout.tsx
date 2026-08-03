@@ -9,25 +9,51 @@ import {
   SquadIcon,
   ZapIcon,
   UserIcon,
-  WrenchIcon,
+  CalendarIcon,
 } from "../components/ui";
 
-const TABS = [
+type Tab = {
+  href: string;
+  label: string;
+  icon: (p: { size?: number }) => React.ReactElement;
+  /** Which other routes light this tab up. */
+  owns?: (pathname: string) => boolean;
+};
+
+/** Operators: the game. Home → squads → learn → your card. */
+const OPERATOR_TABS: Tab[] = [
   { href: "/dashboard", label: "Home", icon: HomeIcon },
-  { href: "/cohorts", label: "Squads", icon: SquadIcon },
+  {
+    href: "/cohorts",
+    label: "Squads",
+    icon: SquadIcon,
+    owns: (p) => p.startsWith("/cohorts"),
+  },
   { href: "/learn", label: "Learn", icon: ZapIcon },
   { href: "/profile", label: "You", icon: UserIcon },
+];
+
+/** Mentors: the job. A mentor is not an operator with an extra page — none of
+ *  the operator surfaces (the track, XP, the build log, squad discovery) are
+ *  things they do, so they don't get them. Squad detail pages are shared,
+ *  because that's where a mentor verifies milestones 4–7. */
+const MENTOR_TABS: Tab[] = [
+  { href: "/mentor", label: "Home", icon: HomeIcon },
+  { href: "/mentor/workshops", label: "Workshops", icon: CalendarIcon },
+  {
+    href: "/mentor/squads",
+    label: "Squads",
+    icon: SquadIcon,
+    owns: (p) => p.startsWith("/cohorts"),
+  },
+  { href: "/mentor/you", label: "You", icon: UserIcon },
 ];
 
 function useTabs() {
   const { profile } = useAuth();
   const pathname = usePathname();
-  const tabs =
-    profile?.role === "mentor"
-      ? [...TABS, { href: "/admin", label: "Admin", icon: WrenchIcon }]
-      : TABS;
-  const isOn = (href: string) =>
-    pathname === href || (href === "/cohorts" && pathname.startsWith("/cohorts"));
+  const tabs = profile?.role === "mentor" ? MENTOR_TABS : OPERATOR_TABS;
+  const isOn = (t: Tab) => pathname === t.href || !!t.owns?.(pathname);
   return { tabs, isOn };
 }
 
@@ -35,24 +61,31 @@ function useTabs() {
 function Rail() {
   const { profile, logout } = useAuth();
   const { tabs, isOn } = useTabs();
+  // The HUD is the operator's game state (streak + level ring). Mentors have
+  // neither, so the rail just ends after the tabs for them.
+  const showHud = profile && profile.role !== "mentor";
 
   return (
     <aside className="rail">
-      <Link href="/dashboard" className="rail__logo" aria-label="High Agency home">
+      <Link
+        href={profile?.role === "mentor" ? "/mentor" : "/dashboard"}
+        className="rail__logo"
+        aria-label="High Agency home"
+      >
         <img src="/brand/high-agency-mark.svg" alt="" />
       </Link>
       {tabs.map((t) => (
         <Link
           key={t.href}
           href={t.href}
-          className={`rail__tab ${isOn(t.href) ? "rail__tab--on" : ""}`}
+          className={`rail__tab ${isOn(t) ? "rail__tab--on" : ""}`}
         >
           <t.icon />
           {t.label}
         </Link>
       ))}
       <div className="rail__foot">
-        {profile && <Hud profile={profile} col />}
+        {showHud && <Hud profile={profile} col />}
         <button className="rail__out" onClick={logout}>
           Exit
         </button>
@@ -64,12 +97,13 @@ function Rail() {
 /** Mobile: sticky top bar with brand + HUD. */
 function TopBar() {
   const { profile } = useAuth();
+  const home = profile?.role === "mentor" ? "/mentor" : "/dashboard";
   return (
     <header className="topbar">
-      <Link href="/dashboard" className="topbar__logo" aria-label="High Agency home">
+      <Link href={home} className="topbar__logo" aria-label="High Agency home">
         <img src="/brand/high-agency-mark.svg" alt="" />
       </Link>
-      {profile && <Hud profile={profile} />}
+      {profile && profile.role !== "mentor" && <Hud profile={profile} />}
     </header>
   );
 }
@@ -83,7 +117,7 @@ function TabBar() {
         <Link
           key={t.href}
           href={t.href}
-          className={`tabbar__tab ${isOn(t.href) ? "tabbar__tab--on" : ""}`}
+          className={`tabbar__tab ${isOn(t) ? "tabbar__tab--on" : ""}`}
         >
           <t.icon />
           {t.label}
@@ -96,10 +130,12 @@ function TabBar() {
 function Shell({ children }: { children: React.ReactNode }) {
   const { user } = useAuth();
   const pathname = usePathname();
+  // Only the invite-only mentor signup renders bare — the rest of /mentor/*
+  // is the mentor's app and wants the shell around it.
   const bare =
     pathname === "/login" ||
     pathname === "/onboarding" ||
-    pathname.startsWith("/mentor"); // invite-only mentor signup renders bare too
+    pathname === "/mentor/join";
 
   if (bare || !user) return <main>{children}</main>;
 

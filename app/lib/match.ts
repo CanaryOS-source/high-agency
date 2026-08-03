@@ -9,6 +9,11 @@ export interface Match {
   cohort: Cohort;
   score: number;
   why: string[];
+  /** Tags/skills already spoken for by a `why` chip. Cards use these to drop
+   *  the duplicate plain chips — "Both building ai" and an "AI" chip on the
+   *  same card is the same fact twice. */
+  matchedTags: string[];
+  matchedWants: string[];
 }
 
 /** Hour offset between two IANA timezones right now (coarse — good
@@ -62,7 +67,13 @@ export function scoreCohort(profile: Profile, cohort: Cohort): Match {
   // Room to join.
   if (cohort.open && cohort.memberUids.length < 8) score += 10;
 
-  return { cohort, score, why: why.slice(0, 3) };
+  return {
+    cohort,
+    score,
+    why: why.slice(0, 3),
+    matchedTags: shared,
+    matchedWants: wanted,
+  };
 }
 
 export function rankCohorts(profile: Profile, cohorts: Cohort[]): Match[] {

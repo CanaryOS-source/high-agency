@@ -58,6 +58,9 @@ export default function CohortsPage() {
   useEffect(() => {
     if (user === null) router.replace("/login");
     else if (user && profile === null) router.replace("/onboarding");
+    // Squad *discovery* is an operator surface — a mentor doesn't apply to
+    // squads, they adopt and look after them.
+    else if (profile?.role === "mentor") router.replace("/mentor/squads");
   }, [user, profile, router]);
 
   useEffect(() => {
@@ -516,8 +519,14 @@ export default function CohortsPage() {
           </div>
         ) : (
           <div className="squads">
-            {matches.map(({ cohort: c, why }) => {
+            {matches.map(({ cohort: c, why, matchedTags, matchedWants }) => {
               const app = applied[c.id];
+              // A "why matched" chip already names the tag or skill it matched
+              // on — repeating it as a plain chip says the same thing twice.
+              const otherTags = c.tags.filter((t) => !matchedTags.includes(t));
+              const otherWants = (c.lookingFor ?? []).filter(
+                (s) => !matchedWants.includes(s)
+              );
               return (
                 <article key={c.id} className="tile sq">
                   <div className="sq__top">
@@ -532,8 +541,8 @@ export default function CohortsPage() {
                   </div>
                   <p className="sq__mission">{c.mission}</p>
                   {(why.length > 0 ||
-                    c.tags.length > 0 ||
-                    (c.lookingFor ?? []).length > 0 ||
+                    otherTags.length > 0 ||
+                    otherWants.length > 0 ||
                     c.mentorUid) && (
                     <div className="sq__tags">
                       {c.mentorUid && (
@@ -544,12 +553,12 @@ export default function CohortsPage() {
                           {w}
                         </span>
                       ))}
-                      {c.tags.map((t) => (
+                      {otherTags.map((t) => (
                         <span key={t} className="chip">
                           {t}
                         </span>
                       ))}
-                      {(c.lookingFor ?? []).map((s) => (
+                      {otherWants.map((s) => (
                         <span key={s} className="chip chip--want">
                           wants {s}
                         </span>

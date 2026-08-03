@@ -40,6 +40,9 @@ export default function ProfilePage() {
   useEffect(() => {
     if (user === null) router.replace("/login");
     else if (user && profile === null) router.replace("/onboarding");
+    // The operator card carries level, XP and streak — none of which a
+    // mentor has. They edit a mentor-shaped card instead.
+    else if (profile?.role === "mentor") router.replace("/mentor/you");
   }, [user, profile, router]);
 
   useEffect(() => {

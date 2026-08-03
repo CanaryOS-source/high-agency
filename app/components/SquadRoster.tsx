@@ -18,6 +18,9 @@ import { ProfileModal } from "./ProfileModal";
 /** Session-level cache — each member profile is fetched at most once no
  *  matter how many squad tiles they appear in. */
 const profileCache = new Map<string, Promise<Profile | null>>();
+export function fetchProfileOnce(uid: string): Promise<Profile | null> {
+  return fetchOnce(uid);
+}
 function fetchOnce(uid: string): Promise<Profile | null> {
   let p = profileCache.get(uid);
   if (!p) {

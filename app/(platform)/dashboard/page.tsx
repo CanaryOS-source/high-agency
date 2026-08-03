@@ -34,6 +34,9 @@ export default function HomePage() {
   useEffect(() => {
     if (user === null) router.replace("/login");
     else if (user && profile === null) router.replace("/onboarding");
+    // The operator app is the game — the track, the streak, the build log.
+    // None of it is a mentor's job, so they never land here.
+    else if (profile?.role === "mentor") router.replace("/mentor");
   }, [user, profile, router]);
 
   useEffect(() => {
