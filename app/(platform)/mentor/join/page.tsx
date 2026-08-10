@@ -4,13 +4,16 @@
  * Mentor signup — deliberately unlinked from any nav. Mentors arrive only via
  * an invite URL (`/mentor/join?code=…`) minted by scripts/mentor-invite.js and
  * shared 1:1 by staff. Flow: validate the single-use code → sign in / create
- * an account → a 3-step mentor-shaped onboarding (identity + expertise +
- * proof; no DOB, no parent email — mentors attest 18+) → the server redeems
- * the code and mints `role: "mentor"` (app/api/mentor/redeem — clients can't
- * write the role). An invitee who already has an operator account gets
- * promoted in place.
+ * an account → the shared 3-step mentor onboarding (MentorOnboarding) → the
+ * server redeems the code and mints `role: "mentor"` (app/api/mentor/redeem —
+ * clients can't write the role). An invitee who already has an operator
+ * account gets promoted in place.
+ *
+ * This is the BREAK-GLASS path and stays working regardless of the temporary
+ * founding-batch allowlist gate; an allowlisted mentor reaches the identical
+ * onboarding via /login/verify instead.
  */
-import { Suspense, useEffect, useMemo, useState } from "react";
+import { Suspense, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import {
   signInWithPopup,
@@ -20,26 +23,8 @@ import {
 import { getFirebaseAuth, googleProvider } from "../../../lib/firebase";
 import { useAuth } from "../../../components/AuthProvider";
 import { peekMentorInvite, redeemMentorInvite } from "../../../lib/db";
-import { localDay } from "../../../lib/gamify";
-import { DOMAINS, SKILLS } from "../../../lib/types";
-import { COUNTRIES } from "../../../lib/countries";
-import { Bar } from "../../../components/ui";
-import {
-  TagField,
-  MAX_EXPERTISE,
-  MAX_COACH,
-} from "../../../components/TagField";
-import type { VentureStage } from "../../../lib/types";
-
-const STAGES: { id: VentureStage; label: string }[] = [
-  { id: "idea", label: "Just an idea" },
-  { id: "building", label: "Building it" },
-  { id: "launched", label: "Launched" },
-  { id: "revenue", label: "Has revenue" },
-];
-
-// Presets are a starting point, not a ceiling — TagField carries the caps.
-const EXPERTISE_PRESETS = DOMAINS.filter((d) => d !== "Other");
+import { MentorOnboarding } from "../../../components/MentorOnboarding";
+import type { MentorSignupInput } from "../../../lib/types";
 
 const INVITE_ERRORS: Record<string, string> = {
   invalid: "That code isn't valid. Check the link you were sent.",
@@ -77,52 +62,14 @@ function MentorJoin() {
   const [code, setCode] = useState(params.get("code") ?? "");
   const [codeOk, setCodeOk] = useState(false);
 
-  // ---- auth (mirrors /login; mentors usually need a fresh account) ----
+  // ---- auth (mirrors /mentor/join's own history; mentors usually need a
+  // fresh account, and this path must keep working without the email gate) ----
   const [mode, setMode] = useState<"signin" | "create">("create");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
 
-  // ---- mentor onboarding, 3 short steps (identity → edge → proof) ----
-  const [step, setStep] = useState<1 | 2 | 3>(1);
-  const [firstName, setFirstName] = useState("");
-  const [lastName, setLastName] = useState("");
-  const [country, setCountry] = useState("");
-  const [timezone, setTimezone] = useState(
-    () => Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC"
-  );
-  const [isAdult, setIsAdult] = useState(false);
-  const [headline, setHeadline] = useState("");
-  const [domains, setDomains] = useState<string[]>([]);
-  const [skills, setSkills] = useState<string[]>([]);
-  const [proofUrl, setProofUrl] = useState("");
-  const [proofNote, setProofNote] = useState("");
-  const [building, setBuilding] = useState("");
-  const [stage, setStage] = useState<VentureStage | null>(null);
-  const [bio, setBio] = useState("");
-  const [github, setGithub] = useState("");
-  const [linkedin, setLinkedin] = useState("");
-  const [site, setSite] = useState("");
-
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
-
-  // Every IANA zone the browser knows, with the detected one guaranteed in.
-  const timezones = useMemo(() => {
-    const all =
-      typeof Intl.supportedValuesOf === "function"
-        ? Intl.supportedValuesOf("timeZone")
-        : [];
-    return all.includes(timezone) ? all : [timezone, ...all];
-  }, [timezone]);
-
-  // Prefill name from the Google account so it rarely has to be typed.
-  useEffect(() => {
-    if (user?.displayName) {
-      const [first, ...rest] = user.displayName.split(" ");
-      setFirstName((n) => n || first);
-      setLastName((n) => n || rest.join(" "));
-    }
-  }, [user]);
 
   async function checkCode() {
     if (busy) return;
@@ -179,36 +126,12 @@ function MentorJoin() {
     setBusy(false);
   }
 
-  /** Shared by the fresh-signup form and the operator-promotion button. */
-  async function redeem(withProfile: boolean) {
+  /** Redeem for an existing operator account (no signup form needed). */
+  async function promote() {
     setBusy(true);
     setError("");
     try {
-      const res = await redeemMentorInvite(
-        code.trim(),
-        withProfile
-          ? {
-              firstName: firstName.trim(),
-              lastName: lastName.trim(),
-              country: country.trim(),
-              timezone,
-              headline: headline.trim(),
-              building: building.trim(),
-              stage: building.trim() && stage ? stage : "idea",
-              domains,
-              skills,
-              proofUrl: proofUrl.trim(),
-              proofNote: proofNote.trim(),
-              bio: bio.trim(),
-              links: {
-                github: github.trim(),
-                linkedin: linkedin.trim(),
-                site: site.trim(),
-              },
-              localDay: localDay(),
-            }
-          : undefined
-      );
+      const res = await redeemMentorInvite(code.trim());
       if (res.ok) {
         router.replace("/mentor");
         return;
@@ -226,33 +149,24 @@ function MentorJoin() {
     setBusy(false);
   }
 
-  function nextFromIdentity() {
-    if (!firstName.trim() || !lastName.trim() || !country.trim()) {
-      setError("Name and country are required.");
-      return;
+  /** Fresh signup: redeem the code AND create the mentor profile in one call.
+   *  Returns an error string for MentorOnboarding to display, or null. */
+  async function redeemWithProfile(input: MentorSignupInput): Promise<string | null> {
+    try {
+      const res = await redeemMentorInvite(code.trim(), input);
+      if (res.ok) {
+        router.replace("/mentor");
+        return null;
+      }
+      if (res.error && INVITE_ERRORS[res.error]) {
+        setCodeOk(false);
+        return INVITE_ERRORS[res.error];
+      }
+      return "Couldn't finish signup. Try again.";
+    } catch {
+      return "Couldn't finish signup. Try again.";
     }
-    if (!isAdult) {
-      setError("Mentors must be 18 or older.");
-      return;
-    }
-    setError("");
-    setStep(2);
   }
-
-  function nextFromEdge() {
-    if (!headline.trim()) {
-      setError("Add a headline — it's how operators know who's verifying them.");
-      return;
-    }
-    if (domains.length === 0 || skills.length === 0) {
-      setError("Pick at least one expertise area and one thing you can coach.");
-      return;
-    }
-    setError("");
-    setStep(3);
-  }
-
-  const hasBuilding = building.trim().length > 0;
 
   /* ---------------- Step 0: the invite code ---------------- */
 
@@ -408,7 +322,7 @@ function MentorJoin() {
           {error && <p className="form-err">{error}</p>}
           <button
             className="btn btn--primary btn--block"
-            onClick={() => void redeem(false)}
+            onClick={() => void promote()}
             disabled={busy}
           >
             {busy ? "…" : "Become a mentor"}
@@ -418,250 +332,14 @@ function MentorJoin() {
     );
   }
 
-  /* ---------------- Mentor onboarding: 3 short steps ---------------- */
+  /* ---------------- Mentor onboarding: the shared 3-step flow ---------- */
 
   return (
-    <section className="ob">
-      <div className="ob__bar">
-        <span className="micro">{step}/3</span>
-        <Bar value={step / 3} ember xs />
-      </div>
-
-      <h1 className="h1">
-        {step === 1
-          ? "Need some quick info first…"
-          : step === 2
-          ? "What's your edge?"
-          : "Proof, then polish."}
-      </h1>
-      <p className="ob__sub">
-        {step === 1
-          ? "Operators only ever see “First L.” — the credibility comes next."
-          : step === 2
-          ? "Your headline and expertise are how operators know who's verifying them."
-          : "All optional — but proof is the highest-signal thing on your profile."}
-      </p>
-
-      {step === 1 && (
-        <>
-          <div className="field-row">
-            <div className="field">
-              <label htmlFor="mj-first">First name</label>
-              <input
-                id="mj-first"
-                value={firstName}
-                onChange={(e) => setFirstName(e.target.value)}
-                placeholder="Grace"
-                maxLength={60}
-              />
-            </div>
-            <div className="field">
-              <label htmlFor="mj-last">Last name</label>
-              <input
-                id="mj-last"
-                value={lastName}
-                onChange={(e) => setLastName(e.target.value)}
-                placeholder="Hopper"
-                maxLength={60}
-              />
-            </div>
-          </div>
-
-          <div className="field-row">
-            <div className="field">
-              <label htmlFor="mj-country">Country</label>
-              <select
-                id="mj-country"
-                value={country}
-                onChange={(e) => setCountry(e.target.value)}
-              >
-                <option value="" disabled>
-                  Pick one
-                </option>
-                {COUNTRIES.map((c) => (
-                  <option key={c} value={c}>
-                    {c}
-                  </option>
-                ))}
-              </select>
-            </div>
-            <div className="field">
-              <label htmlFor="mj-tz">Timezone</label>
-              <select
-                id="mj-tz"
-                value={timezone}
-                onChange={(e) => setTimezone(e.target.value)}
-              >
-                {timezones.map((tz) => (
-                  <option key={tz} value={tz}>
-                    {tz}
-                  </option>
-                ))}
-              </select>
-            </div>
-          </div>
-          <small className="field__hint">
-            Schedules your office hours. Nothing more precise.
-          </small>
-
-          <label className="admin-check">
-            <input
-              type="checkbox"
-              checked={isAdult}
-              onChange={(e) => setIsAdult(e.target.checked)}
-            />
-            <span>I&apos;m 18 or older</span>
-          </label>
-
-          {error && <p className="form-err">{error}</p>}
-
-          <div className="row-actions">
-            <button className="btn btn--primary" onClick={nextFromIdentity}>
-              Next
-            </button>
-          </div>
-        </>
-      )}
-
-      {step === 2 && (
-        <>
-          <div className="field">
-            <label htmlFor="mj-headline">Headline</label>
-            <input
-              id="mj-headline"
-              value={headline}
-              onChange={(e) => setHeadline(e.target.value)}
-              placeholder="Founder of Loop (acq. 2024) · ex-Shopify growth"
-              maxLength={90}
-            />
-          </div>
-
-          <TagField
-            label="Expertise"
-            presets={EXPERTISE_PRESETS}
-            value={domains}
-            max={MAX_EXPERTISE}
-            onChange={setDomains}
-          />
-
-          <TagField
-            label="Can coach"
-            presets={SKILLS}
-            value={skills}
-            max={MAX_COACH}
-            onChange={setSkills}
-          />
-
-          {error && <p className="form-err">{error}</p>}
-
-          <div className="row-actions">
-            <button className="btn btn--ghost" onClick={() => setStep(1)}>
-              Back
-            </button>
-            <button className="btn btn--primary" onClick={nextFromEdge}>
-              Next
-            </button>
-          </div>
-        </>
-      )}
-
-      {step === 3 && (
-        <>
-          <div className="field">
-            <label>Proof of work · optional</label>
-            <input
-              value={proofUrl}
-              onChange={(e) => setProofUrl(e.target.value)}
-              placeholder="Link the best thing you've shipped"
-              maxLength={300}
-            />
-            <input
-              value={proofNote}
-              onChange={(e) => setProofNote(e.target.value)}
-              placeholder="Why it matters — one line"
-              maxLength={200}
-            />
-          </div>
-
-          <div className="field">
-            <label htmlFor="mj-building">Building now · optional</label>
-            <textarea
-              id="mj-building"
-              value={building}
-              onChange={(e) => setBuilding(e.target.value)}
-              placeholder="Mentors build too — what's on your bench?"
-              maxLength={300}
-            />
-          </div>
-
-          {hasBuilding && (
-            <div className="field">
-              <label>Where&apos;s it at?</label>
-              <div className="chip-row">
-                {STAGES.map((s) => (
-                  <button
-                    key={s.id}
-                    type="button"
-                    className={`pick ${stage === s.id ? "sel" : ""}`}
-                    onClick={() => setStage(s.id)}
-                  >
-                    {s.label}
-                  </button>
-                ))}
-              </div>
-            </div>
-          )}
-
-          <div className="field">
-            <label htmlFor="mj-bio">Bio · optional</label>
-            <textarea
-              id="mj-bio"
-              value={bio}
-              onChange={(e) => setBio(e.target.value)}
-              placeholder="Personality, not résumé"
-              maxLength={300}
-            />
-          </div>
-
-          <div className="field">
-            <label>Links · optional</label>
-            <input
-              value={linkedin}
-              onChange={(e) => setLinkedin(e.target.value)}
-              placeholder="LinkedIn"
-              maxLength={200}
-            />
-            <input
-              value={github}
-              onChange={(e) => setGithub(e.target.value)}
-              placeholder="GitHub"
-              maxLength={200}
-            />
-            <input
-              value={site}
-              onChange={(e) => setSite(e.target.value)}
-              placeholder="Personal site"
-              maxLength={200}
-            />
-          </div>
-
-          {error && <p className="form-err">{error}</p>}
-
-          <div className="row-actions">
-            <button className="btn btn--ghost" onClick={() => setStep(2)}>
-              Back
-            </button>
-            <button
-              className="btn btn--primary"
-              onClick={() => void redeem(true)}
-              disabled={busy}
-            >
-              {busy ? "…" : "Join as mentor"}
-            </button>
-          </div>
-        </>
-      )}
-    </section>
+    <MentorOnboarding
+      prefillName={user.displayName}
+      submitLabel="Join as mentor"
+      onSubmit={redeemWithProfile}
+    />
   );
 }
 

@@ -34,14 +34,52 @@ an open question that supersedes the PRD.
   pending GoDaddy DNS). **Production is intentionally a marketing/waitlist page only** — the
   authenticated platform (`/login` + everything under `app/(platform)/`) is gated OFF in
   production and ON in local `next dev`, via the `PLATFORM_ENABLED` flag
-  ([`app/lib/flags.ts`](app/lib/flags.ts)) enforced by [`proxy.ts`](proxy.ts). The platform is
-  built but not yet exposed to real users; flip it on later by setting
-  `NEXT_PUBLIC_PLATFORM_ENABLED=true` in the Vercel project.
+  ([`app/lib/flags.ts`](app/lib/flags.ts)) enforced by [`proxy.ts`](proxy.ts). Flip it on by
+  setting `NEXT_PUBLIC_PLATFORM_ENABLED=true` in the Vercel project.
+  **This is changing:** the platform is being opened in production for the founding
+  batch, made safe for strangers by the temporary access gate below. See
+  [`QA-HANDOFF.md`](QA-HANDOFF.md) §1 for the go-live checklist — note that
+  **Email link (passwordless) sign-in is still disabled** in the Firebase Console,
+  which blocks the gate entirely until someone enables it.
 - **Scale target:** low hundreds of concurrent users for v1; architecture shouldn't
   preclude low thousands without a rewrite.
 - **This is a small team.** The platform reflects considered product decisions — some of which
   **deliberately diverge from `prd.md`** (see Open questions). Read the code as intentional
   unless flagged otherwise.
+
+## ⏳ TEMPORARY: the founding-batch access gate
+
+Production is open to strangers, but **accounts are not**. Only an email on the
+`approvedMembers` allowlist can get in. `/login` is not a sign-in form — it takes one
+email and either mails a single-use Firebase sign-in link or says "not in the batch
+yet" and points at the waitlist. There is deliberately **no Google button, no password
+field and no create-account toggle** there; any of them would mint an account for
+someone who isn't approved.
+
+- **`approvedMembers/{email}`** — doc id is the email *trimmed and lowercased* (so staff
+  can add one by hand in the Firebase Console). Fields: `role: "operator" | "mentor"`
+  (required), optional `name` / `addedAt` (epoch ms) / `note`. **Client access is
+  deny-all** — it's read only through the Admin SDK. `exists()` still resolves against
+  it in rules, which is what makes the gate enforceable rather than cosmetic.
+- **Enforced in two places:** `/api/access/*` (server) and `firestore.rules` — creating
+  a `profiles/{uid}` doc requires `isApprovedMember()`. The Admin-SDK mentor paths
+  bypass rules, so both mentor flows are unaffected.
+- **Two ways to become a mentor**, sharing one onboarding component
+  (`app/components/MentorOnboarding.tsx`) and one profile builder
+  (`buildMentorProfile`): the allowlist (`/login` → `/login/verify` →
+  `/api/access/mentor-profile`) and the break-glass invite code
+  (`/mentor/join?code=…` → `/api/mentor/redeem`). **Keep the invite path working.**
+- **Ops:** `node scripts/approve.js <email> operator|mentor ["Name"]`, `--remove` to
+  revoke. Or the Console click-path in [`QA-HANDOFF.md`](QA-HANDOFF.md) §1a.
+
+**This is meant to be deleted in one commit when the batch ends.** Everything
+gate-specific is named `access*` (`app/lib/accessGate.ts`, `accessEmail.ts`,
+`accessClient.ts`, `app/api/access/**`, `app/(platform)/login/verify/`,
+`scripts/approve.js`) plus the `approvedMembers` rules block and the
+`isApprovedMember()` clause on profile create. The removal checklist lives at the top
+of [`app/lib/accessGate.ts`](app/lib/accessGate.ts). **Don't entangle new product code
+with it** — if you need gate behaviour, import from those modules rather than
+spreading allowlist checks around.
 
 ## ⚠️ Monetization is deferred until after the MVP ships
 
@@ -162,12 +200,16 @@ Types live in [`app/lib/types.ts`](app/lib/types.ts); data access in
   `/dashboard`, `/cohorts`, `/cohorts/[id]`, `/learn`, `/profile`. **Mentor routes:**
   `/mentor` (home queues), `/mentor/workshops` (month calendar of every session + authoring),
   `/mentor/squads` (verify queue, check-in requests, adoption feed, consent queue),
-  `/mentor/you` (mentor profile). Plus `/login`, `/onboarding`, and `/mentor/join`
+  `/mentor/you` (mentor profile). Plus `/login` + `/login/verify` (the temporary
+  founding-batch access gate — see below), `/onboarding`, and `/mentor/join`
   (invite-only mentor signup, unlinked from nav).
 - `app/api/` — the server-authoritative Route Handlers (Node, `firebase-admin`, bypass rules):
-  `consent/send` + `consent/approve` (parental consent; approval page at `/consent/[token]`)
-  and `mentor/peek` + `mentor/redeem` (mentor invites). Server logic lives in
-  `app/lib/firebaseAdmin.ts`, `app/lib/consentServer.ts`, `app/lib/mentorInviteServer.ts` —
+  `consent/send` + `consent/approve` (parental consent; approval page at `/consent/[token]`),
+  `mentor/peek` + `mentor/redeem` (mentor invites), `cron/unassigned-squads` (daily
+  ops sweep, `CRON_SECRET`-gated, scheduled in `vercel.json`), and `access/request` +
+  `access/claim` + `access/mentor-profile` (the temporary access gate). Server logic
+  lives in `app/lib/firebaseAdmin.ts`, `app/lib/consentServer.ts`,
+  `app/lib/mentorInviteServer.ts`, `app/lib/accessGate.ts`, `app/lib/accessEmail.ts` —
   **never import these from client components.**
 - `app/styleguide/page.tsx` — the living design-system reference (top-level route, `noindex`).
 - `app/components/AuthProvider.tsx` — client auth context (`useAuth()` → `{ user, profile,
@@ -179,12 +221,15 @@ Types live in [`app/lib/types.ts`](app/lib/types.ts); data access in
 - `app/lib/` — `types.ts`, `firebase.ts` (config + waitlist), `db.ts` (all Firestore CRUD +
   live `watch*` subscriptions), `gamify.ts` (XP/levels/streaks/entitlements), `milestones.ts`
   (the track), `match.ts` (cohort matching), `flags.ts` (`PLATFORM_ENABLED` build-time flag).
+  Plus the deletable gate trio: `accessGate.ts` (server: allowlist lookup + rate limit),
+  `accessEmail.ts` (server: sign-in-link mail), `accessClient.ts` (browser: fetch wrappers).
 - `proxy.ts` (repo root) — Next 16 `proxy` (the renamed `middleware`). When `PLATFORM_ENABLED`
   is false (production), it redirects every platform route back to the waitlist at `/`.
 - `scripts/` — local admin/dev tooling (Node, REST + firebase CLI OAuth):
   `seed.js` (squads, profiles, workshops, build logs — the Learn page's content is these
   workshops), `admin-set.js` (`<uid> consent|mentor|pro`), `mentor-invite.js` (mint a
-  single-use mentor invite link), `cleanup-test.js`, `test-applicant.js` (exercises the
+  single-use mentor invite link), `approve.js` (add/remove a founding-batch allowlist
+  entry), `cleanup-test.js`, `test-applicant.js` (exercises the
   security rules as a real client), `fb-token.js` (token helper). There is no
   `seed-courses.js`.
 - `firestore.rules` — the enforcement backend. `design-system.md` — visual SoT (read before
@@ -231,6 +276,7 @@ npm run lint     # eslint
 node scripts/seed.js                        # seed squads, profiles, workshops, build logs
 node scripts/admin-set.js <uid> mentor      # promote a mentor directly (also: consent | pro)
 node scripts/mentor-invite.js "<label>" 30  # mint a single-use mentor invite link (days opt.)
+node scripts/approve.js <email> mentor      # founding-batch allowlist (also: operator | --remove)
 node scripts/cleanup-test.js <cohortId>     # remove smoke-test artifacts
 
 # Tests (wrap the Firestore emulator; pinned firebase-tools@13 devDep):

@@ -3,67 +3,100 @@
 Everything you need to hand High Agency to someone outside the repo and have them
 test both sides of the product end to end.
 
-**The one blocker to solve first:** production (`high-agency.io` /
-`highagencyio.vercel.app`) is a **waitlist page only**. The authenticated platform
-is gated off by `NEXT_PUBLIC_PLATFORM_ENABLED`, so Josh cannot QA anything by
-visiting the live site. Pick a path in §1 before you send him anything.
+**What changed:** there is no preview deploy any more. Production
+(`high-agency.io`) goes live with the platform switched **on**, and is kept safe
+for strangers by a **founding-batch access gate** — only an email on the
+`approvedMembers` allowlist can get an account at all. Josh QAs on production,
+against a real account, like a real founding member. §1 is the go-live checklist.
 
 ---
 
-## 1. Where Josh actually tests
+## 1. Going live behind the access gate
 
-Three options. **Option B is the recommended one** — Josh gets a URL, and production
-stays a waitlist.
+Production stops being waitlist-only. `/login` is no longer a sign-in form: it
+asks for one email, and either mails a single-use sign-in link (if that email is
+on the allowlist) or says "you're not in the batch yet" and points at the
+waitlist. There is **no Google button and no password field** — either would mint
+an account for someone who isn't on the list.
 
-| | Setup effort | Josh needs | Prod risk |
-|---|---|---|---|
-| **A. Local dev** | Low for you, high for him | Node, the repo, a terminal | None |
-| **B. Vercel Preview** ✅ | ~15 min, one time | A link | None — preview only |
-| **C. Turn on production** | 1 env var | A link | **Real; don't** |
+> **This gate is temporary.** It exists for the founding batch and is built to be
+> deleted in one commit — everything lives in files named `access*` plus the
+> `approvedMembers` rules block. See `app/lib/accessGate.ts` for the removal
+> checklist.
 
-### Option B — a preview deployment with the platform switched on
+### 1a. Add someone to the allowlist — Firebase Console
 
-1. **Add the platform flag to the Preview environment only.** In the Vercel
-   dashboard (project `high-agency`) → Settings → Environment Variables, or:
+The doc ID **is** the email, trimmed and lowercased. Anything else and the lookup
+misses.
 
-   ```bash
-   vercel env add NEXT_PUBLIC_PLATFORM_ENABLED preview
-   # value: true
-   ```
+1. Firebase Console → project **`highagency-62e67`** → **Firestore Database**
+2. Collection **`approvedMembers`** (→ **Start collection** the first time)
+3. **Add document**
+4. **Document ID** = the email, all lowercase — e.g. `josh@example.com`
+5. Add field **`role`** · type **string** · value **`operator`** or **`mentor`**
+6. Optional: `name` (string), `note` (string), `addedAt` (number, epoch ms).
+   **All three are optional** — code that reads a hand-made doc must not, and
+   does not, depend on them.
+7. **Save**
 
-   Do **not** add it to Production. Production keeps the waitlist.
+That's the whole grant. They can now request a link at `/login`.
 
-2. **Add the Firebase Admin credentials to Preview.** Without these, parental
-   consent and mentor-invite redemption return 500 — meaning Josh literally cannot
-   become a mentor. One of:
+### 1b. Or from the terminal
 
-   - `FIREBASE_SERVICE_ACCOUNT` — the whole service-account JSON, or
-   - `FIREBASE_CLIENT_EMAIL` + `FIREBASE_PRIVATE_KEY`
+```bash
+firebase login                                        # as info@high-agency.io
+node scripts/approve.js josh@example.com mentor "Josh N."
+node scripts/approve.js someone@example.com operator
+node scripts/approve.js someone@example.com --remove  # revoke
+```
 
-   Optional but useful:
-   - `NEXT_PUBLIC_APP_URL` — set to the preview URL so consent links in emails
-     point at the preview, not localhost.
-   - `RESEND_API_KEY` + `CONSENT_EMAIL_FROM` — without these, consent emails aren't
-     sent; the link is logged to the Vercel function logs instead. That's fine for
-     QA as long as Josh knows to ask you for the link.
+Same collection, same doc-ID convention — Console and script entries are
+interchangeable. Removing an entry stops **new** sign-in links and blocks a fresh
+profile; it does not delete an account that already exists.
 
-3. **Push a branch and grab the preview URL.**
+### 1c. Production checklist — do all of this before flipping the flag
 
-   ```bash
-   git checkout -b qa/mentor-views
-   git push -u origin qa/mentor-views
-   ```
+**Vercel → project `high-agency` → Settings → Environment Variables → Production:**
 
-   Vercel comments the preview URL on the branch, or `vercel ls` shows it.
+| Variable | Value / note |
+|---|---|
+| `NEXT_PUBLIC_PLATFORM_ENABLED` | `true` — this is the switch that opens the platform |
+| `FIREBASE_SERVICE_ACCOUNT` | full service-account JSON (or `FIREBASE_CLIENT_EMAIL` + `FIREBASE_PRIVATE_KEY`) |
+| `NEXT_PUBLIC_APP_URL` | `https://high-agency.io` — sign-in and consent links are built from this |
+| `RESEND_API_KEY` | without it **no sign-in emails are sent**; the link is written to the Vercel function log instead |
+| `ACCESS_EMAIL_FROM` | sender for sign-in links; falls back to `CONSENT_EMAIL_FROM` |
+| `CONSENT_EMAIL_FROM` | sender for parental-consent emails |
+| `CRON_SECRET` | the daily unclaimed-squads sweep 503s without it |
 
-4. **⚠️ Tell Josh to sign in with email + password, not Google.** Google SSO needs
-   the exact domain listed under Firebase Console → Authentication → Settings →
-   Authorized domains, and every preview deploy gets a fresh hostname. Email/password
-   has no such restriction and works immediately. (If you want SSO to work, add the
-   stable alias `high-agency-<team>.vercel.app` to Authorized domains and give Josh
-   that URL rather than the per-commit one.)
+Missing Admin credentials is the loud one: **every** server-authoritative flow —
+sign-in link generation, the allowlist claim, parental consent, mentor-invite
+redemption — 500s without them.
 
-### Option A — local, if Josh is comfortable in a terminal
+**Firebase Console → Authentication → Sign-in method:**
+
+- ⚠️ **Enable "Email link (passwordless sign-in)".** *This is currently DISABLED
+  and it is a hard blocker* — `/api/access/request` fails with
+  `auth/operation-not-allowed` and nobody can sign in at all. Verified against the
+  live project on 2026-08-03.
+- Leave email/password enabled — `/mentor/join?code=…` (break-glass) still uses it.
+
+**Firebase Console → Authentication → Settings → Authorized domains:**
+
+- Add `high-agency.io` **and** `www.high-agency.io`. Email-link sign-in refuses to
+  complete on a domain that isn't listed.
+
+**Firestore:**
+
+```bash
+firebase deploy --only firestore:rules
+```
+
+The gate is enforced in the rules too, not just the UI: creating a
+`profiles/{uid}` doc now requires the caller's token email to be on the
+allowlist. A repo rules file is not a deployed rules file — deploy it, or the
+production database is still running the old rules.
+
+### 1d. Testing locally instead
 
 ```bash
 git clone <repo> && cd high-agency
@@ -71,9 +104,18 @@ npm install
 npm run dev        # http://localhost:3000
 ```
 
-`next dev` turns the platform on automatically — no env var needed. The server-side
-routes (consent, mentor redeem) need Application Default Credentials locally:
-`gcloud auth application-default login`.
+`next dev` turns the platform on automatically — no env var needed. Server routes
+need Firebase Admin credentials (`gcloud auth application-default login`, or a
+`FIREBASE_SERVICE_ACCOUNT` in `.env`). **With no `RESEND_API_KEY`, no email is
+sent — the sign-in URL is printed to the dev-server console**, which is the
+intended way to test the flow locally. Look for:
+
+```
+[access] No RESEND_API_KEY set — would email you@example.com a sign-in link.
+[access] Sign-in link: http://localhost:3000/login/verify?...
+```
+
+Paste that URL into the browser to complete sign-in.
 
 > **Heads-up: every environment writes to the same live Firestore project
 > (`highagency-62e67`).** There is no staging database. Whatever Josh creates —
@@ -85,60 +127,68 @@ routes (consent, mentor redeem) need Application Default Credentials locally:
 
 ## 2. Giving Josh a mentor account
 
-Mentors are **invite-only**. There is no signup link and no way to self-promote —
-the Firestore rules block clients from ever writing `role: "mentor"`.
+Mentors can never self-promote — the Firestore rules block clients from ever
+writing `role: "mentor"`, so every route below is server-side.
+
+**The normal way now: allowlist him as a mentor.** Add `josh@example.com` with
+`role: "mentor"` (§1a or §1b), then he goes to `high-agency.io/login`, enters that
+email, opens the link we mail him, and fills the same 3-step mentor onboarding
+(name, country, headline, expertise, what he can coach) → lands on `/mentor`.
 
 ```bash
-# Log in as the project owner first (once):
-firebase login          # as info@high-agency.io
+node scripts/approve.js josh@example.com mentor "Josh N."
+```
 
-# Mint a single-use invite valid for 14 days:
+**Break-glass #1 — the invite code.** Still works, unchanged, and does not need
+the allowlist at all. Useful if the email gate itself is what's broken:
+
+```bash
+firebase login                              # as info@high-agency.io
 node scripts/mentor-invite.js "Josh — QA" 14
 ```
 
-The script prints two URLs — a localhost one and a `high-agency.io` one. **Neither
-is what you send for a preview deploy.** Take the `?code=…` value and paste it onto
-the preview host:
+The script prints a `/mentor/join?code=…` URL. Swap the host if you're testing
+somewhere other than production. The code is printed **once** and never stored in
+readable form — lose it and you mint a new one. It's single-use: the moment Josh
+redeems it, it's dead.
 
-```
-https://<preview-url>/mentor/join?code=<the-code-it-printed>
-```
-
-The code is printed **once** and never stored in readable form. If you lose it, mint
-a new one. It's single-use — the moment Josh redeems it, it's dead.
-
-Josh then: opens the link → creates an account (email + password) → fills a short
-3-step mentor onboarding (name, country, headline, expertise, what he can coach) →
-lands on `/mentor`.
-
-**Break-glass alternative** — if the invite flow misbehaves and you just need him
-mentor-shaped: have him sign up as a normal student first, get his UID from Firebase
-Console → Authentication, then:
+**Break-glass #2 — promote in place.** If you just need him mentor-shaped: have
+him sign up as a normal student first, get his UID from Firebase Console →
+Authentication, then:
 
 ```bash
 node scripts/admin-set.js <uid> mentor
 ```
 
-This promotes the account in place. Note that a promoted account keeps its operator
-onboarding data (age band, etc.), so the mentor invite path is the more faithful test.
+A promoted account keeps its operator onboarding data (age band, etc.), so the
+allowlist path is the more faithful test.
 
 ---
 
 ## 3. Giving Josh a student account
 
-No invite needed — he signs up normally.
+He still needs to be on the allowlist — that's the whole point of the gate.
 
-1. Go to `<preview-url>/login` → **Create one** → email + password.
-2. Complete onboarding.
-3. **Date of birth matters.** Under 18 puts the account into `consentStatus: pending`
+1. Add him as an operator: `node scripts/approve.js josh+student@example.com operator`
+   (or by hand in the Console, §1a).
+2. Go to `high-agency.io/login` → enter that email → **Send me a sign-in link**.
+3. Open the emailed link → operator onboarding runs exactly as before.
+4. **Worth testing the reject path too:** enter an email that is *not* on the list.
+   He should get "You're not in the batch yet" and an **Apply to join** button that
+   lands on the waitlist — no account created, no email sent.
+5. **Date of birth matters.** Under 18 puts the account into `consentStatus: pending`
    until a parent approves, which blocks applying to squads, submitting proof and
    posting build logs. For a first pass, have him use an 18+ DOB. Then do a second
    account with a minor DOB specifically to test the consent gate.
-4. To unblock a minor test account without email:
+6. To unblock a minor test account without email:
    ```bash
    node scripts/admin-set.js <uid> consent
    ```
    …or grant it from the mentor account: **Squads → Parental consent → Grant**.
+
+> A second test account needs a second allowlist entry. Gmail's `+` addressing
+> (`josh+student@…`) is the cheap way to get one — but add the address exactly as
+> typed, lowercased, since that's the doc ID the lookup uses.
 
 **He'll want a squad to test against.** Either:
 - Seed the demo data — `node scripts/seed.js` creates squads, operator profiles,
@@ -175,6 +225,7 @@ page.** The whole app swaps based on role.
 | Workshops | Enroll in them | **A month calendar of every session + authoring** |
 | "You" page | Player card: level, XP bar, progress to next level | **Expertise, what he can coach, squads, sessions ahead — no game state** |
 | `/admin` | — | **Deleted.** Its work moved into Workshops and Squads |
+| Getting in | Email → sign-in link (allowlist only) | Same gate, same link |
 
 Also: default workshop seats changed **30 → 15**, and redundant labels were pruned
 across the app (duplicate level chips, "why matched" chips that repeated a squad's
@@ -183,6 +234,26 @@ own tags, XP labels shown to mentors who don't earn XP).
 ---
 
 ## 6. QA checklist
+
+### The access gate (do this first — nothing else is reachable without it)
+- [ ] The waitlist at `/` shows a **Log in** link in the top nav (it only appears
+      when the platform is enabled — its absence means the flag didn't take).
+- [ ] `/login` shows **one email field and one button**. No Google button, no
+      password field, no "create one" toggle.
+- [ ] An email **not** on the allowlist → "You're not in the batch yet", and
+      **Apply to join** goes to `/`. No email arrives.
+- [ ] An email **on** the allowlist → "Check your inbox", naming that exact
+      address, plus a **use a different email** link that resets the form.
+- [ ] The emailed link signs him in and lands him in the right place: operator →
+      `/onboarding`, mentor → mentor onboarding → `/mentor`, returning user →
+      `/dashboard` or `/mentor`.
+- [ ] Opening the **same link a second time** shows "This link has expired" with a
+      **Get a new link** button (they're single-use).
+- [ ] Opening the link in a **different browser** than it was requested from
+      prompts for the email first, then completes.
+- [ ] Requesting ~6 links for the same email in a few minutes starts returning a
+      friendly "too many attempts" message rather than an error.
+- [ ] `/mentor/join?code=…` still works end to end, independently of the gate.
 
 ### Mentor — sidebar and shell
 - [ ] Sidebar reads **Home · Workshops · Squads · You**, in that order.
@@ -288,6 +359,14 @@ Tell Josh these up front or he'll file them as bugs:
   operators behind them, but nobody can sign in as them — there are no auth accounts
   for seed UIDs, so their profiles are read-only fixtures.
 - **`/admin` is gone.** Old bookmarks 404 on purpose.
+- **There is no password anywhere in the main flow.** Sign-in is a mailed link
+  every time. That's the gate, not a missing feature.
+- **"Not in the batch yet" is not an error.** It's the designed answer for an
+  address nobody has approved, and it looks identical whether the address exists
+  in Firebase Auth or not — deliberately, so the page can't be used to probe who
+  has an account.
+- **Sign-in links die after one use.** Reloading `/login/verify`, or opening the
+  link twice, correctly shows the expired screen.
 
 ---
 
@@ -295,12 +374,23 @@ Tell Josh these up front or he'll file them as bugs:
 
 Stated plainly so nobody assumes more coverage than exists:
 
-- The mentor screens were **type-checked, linted and built clean**, and every route
-  (`/mentor`, `/mentor/workshops`, `/mentor/squads`, `/mentor/you`) responds and
-  correctly bounces a signed-out visitor to `/login`.
-- They were **not** clicked through against a live signed-in mentor account — that
-  needs credentials I don't have. The calendar's visual density, the ember/grey
-  distinction between own and others' sessions, and the mobile collapse are the
-  things most worth a human eye first.
-- The `firestore.rules` were **not** changed by this work (no data shapes moved).
-  The full suite passes: **76/76** (`npm test` — 63 rules, 5 consent, 8 mentor-invite).
+- **The end-to-end magic-link flow was never completed against the live project**,
+  because **Email link (passwordless) sign-in is disabled** in the Firebase Console
+  (§1c). `generateSignInWithEmailLink` returns `auth/operation-not-allowed`, so no
+  link can be minted at all until someone flips that toggle. Verified 2026-08-03.
+  Everything *around* it was exercised against live Firestore: an unapproved email
+  returns `not-approved`, a malformed one returns 400, the rate limiter returns 429
+  on the 6th attempt, the failure is logged server-side and returns a generic
+  message with no internals, and with `RESEND_API_KEY` unset the transport logs the
+  sign-in URL and reports `"logged"` instead of throwing.
+- Consequently **nobody has yet signed in through the gate and landed in
+  onboarding** — the first thing to retest once the provider is enabled, for both
+  an operator and a mentor.
+- The gate's UI states were verified by rendering `/login` (email-only, no Google
+  button, no password field) but **not clicked through in a browser**.
+- `firestore.rules` **did** change: `approvedMembers` is deny-all, and creating a
+  profile now requires the caller's token email to be on the allowlist. This is
+  covered by 7 new rules tests, but **the rules are not deployed** — run
+  `firebase deploy --only firestore:rules` (§1c).
+- The full suite passes: **83/83** (`npm test` — 70 rules, 5 consent, 8
+  mentor-invite).

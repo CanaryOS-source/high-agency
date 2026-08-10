@@ -41,6 +41,17 @@ service cloud.firestore {
     //   the roster lives on the doc (enrolledUids) so the cap is enforceable
     //   here, and an operator may only ever add their own uid to it.
     //
+    // Collection: approvedMembers/{email} — TEMPORARY founding-batch access
+    //   gate. Doc id is the trimmed+lowercased email; fields are role
+    //   ('operator'|'mentor'), plus optional name/addedAt/note. Server-only:
+    //   no client may read or write it (same posture as consentTokens), and
+    //   it is written by staff via the Firebase Console or scripts/approve.js.
+    //   A profile can only be CREATED by a caller whose token email is on this
+    //   list — exists() still works against a deny-all collection, which is
+    //   what makes the gate enforceable here rather than only in the UI.
+    //   Delete this collection, isApprovedMember() and its use in
+    //   /profiles create when the founding batch ends (see app/lib/accessGate.ts).
+    //
     // ===============================================================
     // Helpers
     // ===============================================================
@@ -109,6 +120,19 @@ service cloud.firestore {
     // Missing profile / missing field (legacy or adult) reads as allowed —
     // only an explicit 'pending' blocks. Grants are server- or mentor-driven,
     // never a self-write (consentStatus is immutable on the owner update path).
+    // TEMPORARY — founding-batch access gate. True when the caller's verified
+    // token email is on the staff-managed allowlist. `approvedMembers` denies
+    // all client access, but exists() is evaluated by the rules engine itself,
+    // so this works without exposing the list to anyone.
+    //
+    // Guarded with .get() because not every provider puts an email on the
+    // token; && short-circuits before .lower() is ever reached on a null.
+    function isApprovedMember() {
+      return isAuthenticated() &&
+        request.auth.token.get('email', '') != '' &&
+        exists(/databases/$(database)/documents/approvedMembers/$(request.auth.token.email.lower()));
+    }
+
     function consentAllows(uid) {
       return !exists(/databases/$(database)/documents/profiles/$(uid)) ||
         get(/databases/$(database)/documents/profiles/$(uid)).data.get('consentStatus', 'granted') != 'pending';
@@ -209,9 +233,18 @@ service cloud.firestore {
       allow read: if isAuthenticated();
       // Clients always start as free-tier operators; admin tooling
       // (which bypasses rules) grants mentor role / pro plan.
+      //
+      // TEMPORARY — founding-batch access gate: the caller's email must also be
+      // on the approvedMembers allowlist. This is what stops a stranger who
+      // reached Firebase Auth by some other route from minting an account once
+      // the platform is live in production. It does NOT affect the mentor
+      // paths: both /api/mentor/redeem and /api/access/mentor-profile write
+      // through the Admin SDK, which bypasses rules entirely.
+      // Drop the isApprovedMember() clause when the batch ends.
       allow create: if isOwner(userId) && isValidProfile(request.resource.data) &&
                        request.resource.data.role == 'operator' &&
-                       request.resource.data.plan == 'free';
+                       request.resource.data.plan == 'free' &&
+                       isApprovedMember();
       // consentStatus + consentEmailSentAt are immutable on a self-update: a
       // pending minor must NOT be able to grant their own consent. Consent is
       // flipped only by a mentor (isConsentGrant) or the server (Admin SDK,
@@ -608,6 +641,22 @@ service cloud.firestore {
     // ===============================================================
 
     match /mentorInvites/{codeHash} {
+      allow read, write: if false;
+    }
+
+    // ===============================================================
+    // TEMPORARY — founding-batch access gate.
+    // Approved members — server-only, same posture as consentTokens and
+    // mentorInvites. Staff writes these by hand in the Firebase Console or
+    // with scripts/approve.js (CLI OAuth, bypasses rules); the app reads them
+    // only through the Admin SDK in app/api/access/**. No client may read the
+    // list (it is a roster of real people's emails) or write it (that would be
+    // self-approval). isApprovedMember() above still resolves against it —
+    // exists() is evaluated by the rules engine, not by the client.
+    // Delete this block with the rest of the gate; see app/lib/accessGate.ts.
+    // ===============================================================
+
+    match /approvedMembers/{email} {
       allow read, write: if false;
     }
   }

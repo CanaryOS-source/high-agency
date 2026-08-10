@@ -163,6 +163,19 @@ beforeEach(async () => {
       weeklyStreak: 2,
       lastRitualWeek: "2026-W27",
     });
+    // TEMPORARY — founding-batch access gate. Profile CREATE now also requires
+    // the caller's token email to be on this allowlist. Seeded with rules
+    // bypassed, exactly as staff writes it (Console / scripts/approve.js).
+    await setDoc(doc(db, "approvedMembers/approved@example.com"), {
+      role: "operator",
+      name: "Approved O.",
+      addedAt: Date.now(),
+    });
+    // Hand-created-in-the-Console shape: role only, no addedAt. Must still work.
+    await setDoc(doc(db, "approvedMembers/wannabe@example.com"), {
+      role: "operator",
+    });
+
     // A different squad neither is a member of, to apply into.
     await setDoc(doc(db, "cohorts/openSquad"), {
       founderUid: "founder",
@@ -369,12 +382,98 @@ test("clients cannot read or write mentorInvites", async () => {
 });
 
 test("client cannot create a profile with role mentor (invite route only)", async () => {
-  const db = testEnv.authenticatedContext("wannabe").firestore();
+  // Allowlisted, so the ONLY thing under test here is the role restriction —
+  // otherwise the access gate would fail this write for the wrong reason.
+  const db = testEnv
+    .authenticatedContext("wannabe", { email: "wannabe@example.com" })
+    .firestore();
   await assertFails(
     setDoc(doc(db, "profiles/wannabe"), {
       ...profile("wannabe", "granted"),
       role: "mentor",
     })
+  );
+});
+
+/* ============ TEMPORARY: founding-batch access gate ====================== *
+ * Delete this block together with approvedMembers / isApprovedMember().
+ * ========================================================================= */
+
+test("GATE: an allowlisted user can create their own profile", async () => {
+  const db = testEnv
+    .authenticatedContext("newbie", { email: "approved@example.com" })
+    .firestore();
+  await assertSucceeds(
+    setDoc(doc(db, "profiles/newbie"), profile("newbie", "granted"))
+  );
+});
+
+test("GATE: the allowlist is matched case-insensitively", async () => {
+  // Doc ids are lowercased; a token carrying the address as typed must still
+  // match, or anyone who signed up with a capital letter is locked out.
+  const db = testEnv
+    .authenticatedContext("shouty", { email: "Approved@Example.com" })
+    .firestore();
+  await assertSucceeds(
+    setDoc(doc(db, "profiles/shouty"), profile("shouty", "granted"))
+  );
+});
+
+test("GATE: a non-allowlisted user cannot create a profile", async () => {
+  const db = testEnv
+    .authenticatedContext("stranger", { email: "stranger@example.com" })
+    .firestore();
+  await assertFails(
+    setDoc(doc(db, "profiles/stranger"), profile("stranger", "granted"))
+  );
+});
+
+test("GATE: a caller with no email on the token cannot create a profile", async () => {
+  const db = testEnv.authenticatedContext("tokenless").firestore();
+  await assertFails(
+    setDoc(doc(db, "profiles/tokenless"), profile("tokenless", "granted"))
+  );
+});
+
+test("GATE: an allowlisted user still cannot create somebody else's profile", async () => {
+  const db = testEnv
+    .authenticatedContext("newbie", { email: "approved@example.com" })
+    .firestore();
+  await assertFails(
+    setDoc(doc(db, "profiles/someoneelse"), profile("someoneelse", "granted"))
+  );
+});
+
+test("GATE: the gate does not block profile UPDATES for existing members", async () => {
+  // Only create is gated. An operator seeded before the gate existed (no email
+  // on their context at all) must still be able to edit their own profile.
+  const db = testEnv.authenticatedContext("granted").firestore();
+  await assertSucceeds(
+    updateDoc(doc(db, "profiles/granted"), {
+      headline: "Still building",
+      updatedAt: serverTimestamp(),
+    })
+  );
+});
+
+test("GATE: clients cannot read or write approvedMembers", async () => {
+  const authed = testEnv
+    .authenticatedContext("newbie", { email: "approved@example.com" })
+    .firestore();
+  await assertFails(getDoc(doc(authed, "approvedMembers/approved@example.com")));
+  await assertFails(
+    setDoc(doc(authed, "approvedMembers/self@example.com"), { role: "mentor" })
+  );
+  await assertFails(
+    deleteDoc(doc(authed, "approvedMembers/approved@example.com"))
+  );
+  // Not even listable — the list is a roster of real people's addresses.
+  await assertFails(getDocs(collection(authed, "approvedMembers")));
+
+  const anon = testEnv.unauthenticatedContext().firestore();
+  await assertFails(getDoc(doc(anon, "approvedMembers/approved@example.com")));
+  await assertFails(
+    setDoc(doc(anon, "approvedMembers/x@example.com"), { role: "mentor" })
   );
 });
 

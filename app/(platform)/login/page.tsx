@@ -1,56 +1,44 @@
 "use client";
 
+/**
+ * TEMPORARY — founding-batch access gate (step 1 of 2).
+ *
+ * For the free founding batch, production is open to strangers but accounts
+ * are not: the only way in is an email that staff has added to the
+ * `approvedMembers` allowlist. So this page asks for one thing — an email —
+ * and either mails a sign-in link or says, politely, that they're not in the
+ * batch yet and points them at the waitlist.
+ *
+ * There is deliberately NO Google button, NO password field and NO
+ * create-account toggle here: every one of those would mint an account for
+ * someone who isn't on the list. (The break-glass mentor path,
+ * /mentor/join?code=…, still has them — it is gated by a single-use code
+ * instead.) Step 2 is app/(platform)/login/verify.
+ *
+ * Delete with the rest of the gate — see app/lib/accessGate.ts for the
+ * checklist and restore an ordinary sign-in form here.
+ */
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
-import {
-  signInWithPopup,
-  signInWithEmailAndPassword,
-  createUserWithEmailAndPassword,
-} from "firebase/auth";
-import { getFirebaseAuth, googleProvider } from "../../lib/firebase";
 import { useAuth } from "../../components/AuthProvider";
+import { requestAccessLink, ACCESS_EMAIL_KEY } from "../../lib/accessClient";
 
-type Mode = "signin" | "create";
-
-/** Friendly copy for the Firebase auth error codes email/password can throw. */
-function authErrorMessage(code: string): string {
-  switch (code) {
-    case "auth/invalid-email":
-      return "That doesn't look like a valid email.";
-    case "auth/missing-password":
-      return "Enter your password.";
-    case "auth/weak-password":
-      return "Password must be at least 6 characters.";
-    case "auth/email-already-in-use":
-      return "That email already has an account — switch to sign in.";
-    case "auth/invalid-credential":
-    case "auth/wrong-password":
-    case "auth/user-not-found":
-      return "Wrong email or password.";
-    case "auth/too-many-requests":
-      return "Too many attempts. Wait a moment, then try again.";
-    default:
-      return "Sign-in failed. Try again.";
-  }
-}
+type GateState = "idle" | "sent" | "not-approved" | "error";
 
 export default function LoginPage() {
   const { user, profile } = useAuth();
   const router = useRouter();
+
+  const [email, setEmail] = useState("");
+  const [state, setState] = useState<GateState>("idle");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  /** The address we actually sent to, so the confirmation can name it even if
+   *  the input is later edited. */
+  const [sentTo, setSentTo] = useState("");
 
-  // Email/password path — a direct identity API call with no off-localhost
-  // redirect, so it works inside sandboxed previews where the Google popup
-  // (which must hand off to highagency-62e67.firebaseapp.com) is blocked. It's also
-  // the email fallback the PRD calls for when SSO isn't available.
-  const [mode, setMode] = useState<Mode>("signin");
-  const [email, setEmail] = useState("");
-  const [password, setPassword] = useState("");
-
-  // Already signed in → route past login. Profile decides the destination:
-  // no profile means onboarding, and mentors get their own app, not the
-  // operator one.
+  // Already signed in → route past login. Unchanged from before the gate:
+  // no profile means onboarding, and mentors get their own app.
   useEffect(() => {
     if (user && profile !== undefined) {
       router.replace(
@@ -59,44 +47,108 @@ export default function LoginPage() {
     }
   }, [user, profile, router]);
 
-  async function signInGoogle() {
-    if (busy) return;
-    setBusy(true);
-    setError("");
-    try {
-      await signInWithPopup(getFirebaseAuth(), googleProvider);
-      // redirect handled by the effect above once profile resolves
-    } catch (e) {
-      const code = (e as { code?: string }).code ?? "";
-      if (code !== "auth/popup-closed-by-user" && code !== "auth/cancelled-popup-request") {
-        setError("Sign-in failed. Try again.");
-      }
-      setBusy(false);
-    }
-  }
-
-  async function signInEmail(e: React.FormEvent) {
+  async function submit(e: React.FormEvent) {
     e.preventDefault();
     if (busy) return;
-    if (!email.trim() || !password) {
-      setError("Email and password are both required.");
+    const trimmed = email.trim();
+    if (!trimmed) {
+      setError("Enter your email.");
       return;
     }
     setBusy(true);
     setError("");
-    try {
-      const auth = getFirebaseAuth();
-      if (mode === "create") {
-        await createUserWithEmailAndPassword(auth, email.trim(), password);
-      } else {
-        await signInWithEmailAndPassword(auth, email.trim(), password);
+
+    const res = await requestAccessLink(trimmed);
+
+    if (res.status === "sent") {
+      // Firebase needs this address back to complete the sign-in on /verify.
+      try {
+        window.localStorage.setItem(ACCESS_EMAIL_KEY, trimmed.toLowerCase());
+      } catch {
+        // Private mode / storage disabled — /verify falls back to asking.
       }
-      // redirect handled by the effect above once profile resolves
-    } catch (err) {
-      setError(authErrorMessage((err as { code?: string }).code ?? ""));
-      setBusy(false);
+      setSentTo(trimmed);
+      setState("sent");
+    } else if (res.status === "not-approved") {
+      setState("not-approved");
+    } else {
+      setState("error");
+      setError(
+        res.message ??
+          (res.status === "bad-email"
+            ? "That doesn't look like a valid email."
+            : "Something went wrong. Try again shortly.")
+      );
     }
+    setBusy(false);
   }
+
+  function reset() {
+    setState("idle");
+    setError("");
+    setSentTo("");
+  }
+
+  /* ---------------- Not in the batch ---------------- */
+
+  if (state === "not-approved") {
+    return (
+      <section className="gate">
+        <div className="gate__inner">
+          <span className="gate__logo" aria-hidden="true">
+            <img src="/brand/high-agency-mark.svg" alt="" />
+          </span>
+          <h1 className="h1">You&apos;re not in the batch yet.</h1>
+          <p className="gate__sub">
+            High Agency is running a small founding batch right now, and
+            <strong> {sentTo || email.trim()}</strong> isn&apos;t on the list.
+            That&apos;s not a no — applications are open, and we&apos;re adding
+            people as spots free up.
+          </p>
+          <button
+            className="btn btn--primary btn--block"
+            onClick={() => router.push("/")}
+          >
+            Apply to join
+          </button>
+          <p className="auth-switch">
+            Wrong email?{" "}
+            <button type="button" className="link-btn" onClick={reset}>
+              Try another
+            </button>
+          </p>
+        </div>
+      </section>
+    );
+  }
+
+  /* ---------------- Link sent ---------------- */
+
+  if (state === "sent") {
+    return (
+      <section className="gate">
+        <div className="gate__inner">
+          <span className="gate__logo" aria-hidden="true">
+            <img src="/brand/high-agency-mark.svg" alt="" />
+          </span>
+          <h1 className="h1">Check your inbox.</h1>
+          <p className="gate__sub">
+            We sent a sign-in link to <strong>{sentTo}</strong>. It&apos;s
+            single-use and expires shortly — open it on this device if you can.
+          </p>
+          <p className="auth-switch">
+            Didn&apos;t arrive? Check spam, or{" "}
+            <button type="button" className="link-btn" onClick={reset}>
+              use a different email
+            </button>
+            .
+          </p>
+        </div>
+      </section>
+    );
+  }
+
+  /* ---------------- The gate ---------------- */
 
   return (
     <section className="gate">
@@ -105,65 +157,38 @@ export default function LoginPage() {
           <img src="/brand/high-agency-mark.svg" alt="" />
         </span>
         <h1 className="h1">Ready to build?</h1>
-        <p className="gate__sub">Your squad&apos;s waiting.</p>
+        <p className="gate__sub">
+          High Agency is invite-only while the founding batch runs. Enter the
+          email you applied with and we&apos;ll send you a sign-in link.
+        </p>
 
-        <button
-          className="btn btn--primary btn--block"
-          onClick={signInGoogle}
-          disabled={busy}
-        >
-          Continue with Google
-        </button>
-
-        <div className="auth-or">
-          <span>or</span>
-        </div>
-
-        <form onSubmit={signInEmail}>
+        <form onSubmit={submit}>
           <div className="field">
-            <label htmlFor="auth-email">Email</label>
+            <label htmlFor="gate-email">Email</label>
             <input
-              id="auth-email"
+              id="gate-email"
               type="email"
               autoComplete="email"
               value={email}
               onChange={(e) => setEmail(e.target.value)}
               placeholder="you@email.com"
               maxLength={254}
+              autoFocus
             />
           </div>
-          <div className="field">
-            <label htmlFor="auth-password">Password</label>
-            <input
-              id="auth-password"
-              type="password"
-              autoComplete={mode === "create" ? "new-password" : "current-password"}
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              placeholder={mode === "create" ? "6+ characters" : "Your password"}
-              maxLength={128}
-            />
-          </div>
-          <button className="btn btn--ink btn--block" type="submit" disabled={busy}>
-            {busy ? "…" : mode === "create" ? "Create account" : "Sign in"}
+          <button className="btn btn--primary btn--block" type="submit" disabled={busy}>
+            {busy ? "Checking…" : "Send me a sign-in link"}
           </button>
         </form>
 
+        {error && <p className="form-err">{error}</p>}
+
         <p className="auth-switch">
-          {mode === "create" ? "Already in?" : "New here?"}{" "}
-          <button
-            type="button"
-            className="link-btn"
-            onClick={() => {
-              setMode((m) => (m === "create" ? "signin" : "create"));
-              setError("");
-            }}
-          >
-            {mode === "create" ? "Sign in" : "Create one"}
+          Not in the batch?{" "}
+          <button type="button" className="link-btn" onClick={() => router.push("/")}>
+            Apply to join
           </button>
         </p>
-
-        {error && <p className="form-err">{error}</p>}
       </div>
     </section>
   );

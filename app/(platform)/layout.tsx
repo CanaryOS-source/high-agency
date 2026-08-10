@@ -131,9 +131,13 @@ function Shell({ children }: { children: React.ReactNode }) {
   const { user } = useAuth();
   const pathname = usePathname();
   // Only the invite-only mentor signup renders bare — the rest of /mentor/*
-  // is the mentor's app and wants the shell around it.
+  // is the mentor's app and wants the shell around it. `/login/verify` is bare
+  // for the same reason as `/login`: it completes sign-in and may run mentor
+  // onboarding, and the shell must not wrap either (it would appear mid-flow,
+  // the moment the magic link resolves a user).
   const bare =
     pathname === "/login" ||
+    pathname === "/login/verify" ||
     pathname === "/onboarding" ||
     pathname === "/mentor/join";
 
