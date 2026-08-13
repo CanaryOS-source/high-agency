@@ -10,7 +10,8 @@
     "test:rules": "firebase emulators:exec --only firestore --project highagency-rules-test \"node --test tests/rules.test.mjs\"",
     "test:consent": "firebase emulators:exec --only firestore --project highagency-62e67 \"tsx --test tests/consent.test.mts\"",
     "test:mentor": "firebase emulators:exec --only firestore --project highagency-62e67 \"tsx --test tests/mentorInvite.test.mts\"",
-    "test": "npm run test:rules && npm run test:consent && npm run test:mentor"
+    "test:hubspot": "firebase emulators:exec --only firestore --project highagency-62e67 \"tsx --test tests/hubspot.test.mts\"",
+    "test": "npm run test:rules && npm run test:consent && npm run test:mentor && npm run test:hubspot"
   },
   "dependencies": {
     "firebase": "^12.14.0",

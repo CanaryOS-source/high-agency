@@ -74,6 +74,10 @@ export interface ApplicationRecord extends ApplicationInput {
   queuePos: number;
   submitted: true;
   ts: number;
+  /** Firestore document id. Absent on the offline fallback record, and on
+   *  records restored from localStorage that predate this field. Used only to
+   *  tell the CRM sync which document to pick up. */
+  docId?: string;
 }
 
 /**
@@ -93,7 +97,7 @@ export async function submitApplication(
   // position monotonic even under concurrent submissions.
   const counterRef = doc(db, "meta", "waitlist");
 
-  const { opId, queuePos } = await runTransaction(db, async (tx) => {
+  const { opId, queuePos, docId } = await runTransaction(db, async (tx) => {
     const snap = await tx.get(counterRef);
     const current = (snap.exists() ? snap.data().count : 0) || 0;
     const pos = QUEUE_BASE + current + 1;
@@ -123,7 +127,7 @@ export async function submitApplication(
       { merge: true }
     );
 
-    return { opId: id, queuePos: pos };
+    return { opId: id, queuePos: pos, docId: appRef.id };
   });
 
   return {
@@ -132,5 +136,6 @@ export async function submitApplication(
     queuePos,
     submitted: true,
     ts: Date.now(),
+    docId,
   };
 }

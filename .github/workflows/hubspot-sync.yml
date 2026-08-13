@@ -1,0 +1,116 @@
+# HubSpot ⇄ Firebase sync trigger.
+#
+# WHY THIS EXISTS INSTEAD OF A VERCEL CRON: Vercel Hobby caps cron jobs at one
+# run per day, and the whole point of the pull direction is that a staff member
+# approves someone in HubSpot and they can sign in a few minutes later. So the
+# frequent trigger comes from GitHub Actions and the daily Vercel cron
+# (vercel.json) stays as the safety net.
+#
+# REQUIRED REPOSITORY SECRETS (Settings → Secrets and variables → Actions):
+#   CRON_SECRET  Same value as the CRON_SECRET environment variable on the
+#                Vercel project. The endpoint returns 503 when it is unset
+#                server-side and 401 when this bearer doesn't match.
+#   APP_URL      Base URL of the deployment to sync, no trailing slash —
+#                e.g. https://high-agency.io
+#
+# UNTIL THOSE SECRETS EXIST, THIS WORKFLOW IS DORMANT, NOT BROKEN. The HubSpot
+# private-app token is still blocked on a Super Admin grant in portal 2410150, so
+# "not configured yet" is an expected, correct state — and a red run every five
+# minutes for an expected state trains everyone to ignore the Actions tab. The
+# first step therefore skips cleanly with a ::notice:: and exits 0.
+#
+# What still fails loudly, once configured: any non-2xx from the endpoint, and
+# any transport error. Per-record failures do NOT fail the job — those come back
+# inside the 200 response body, which is printed below, because one malformed
+# legacy document must not look like an outage.
+name: HubSpot sync
+
+on:
+  schedule:
+    # Every 5 minutes. GitHub's scheduler is best-effort and can lag under load;
+    # that is fine, the endpoint is idempotent and the work is cumulative.
+    - cron: "*/5 * * * *"
+  workflow_dispatch:
+
+# Never let two reconciles overlap. They are safe to run concurrently, but
+# serialising them keeps the HubSpot API call volume predictable.
+concurrency:
+  group: hubspot-sync
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      # Dormant-not-broken gate. A missing secret is an expected state while the
+      # HubSpot token is still blocked, so it is a clean skip: notice, exit 0.
+      # This is deliberately its own step with an `if:` on the one below, rather
+      # than an early `exit 0` inside it — an early exit ends only its own step,
+      # so a future third step would quietly run unconfigured.
+      - name: Check configuration
+        id: config
+        env:
+          APP_URL: ${{ secrets.APP_URL }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "${APP_URL:-}" ] || [ -z "${CRON_SECRET:-}" ]; then
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::HubSpot sync is not configured yet — skipping, this is not a failure. The integration stays dormant until the APP_URL and CRON_SECRET repository secrets exist (Settings → Secrets and variables → Actions). APP_URL is the deployment base URL with no trailing slash, e.g. https://high-agency.io; CRON_SECRET must match the CRON_SECRET environment variable on the Vercel project. See docs/hubspot-integration.md."
+            exit 0
+          fi
+
+          echo "configured=true" >> "$GITHUB_OUTPUT"
+
+      - name: Trigger reconcile
+        if: steps.config.outputs.configured == 'true'
+        env:
+          APP_URL: ${{ secrets.APP_URL }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          set -euo pipefail
+
+          # --fail-with-body keeps the response body on a non-2xx, which is the
+          # difference between a diagnosable failure and a bare exit code:
+          # {"error":"cron-not-configured"} (503, CRON_SECRET unset on Vercel) and
+          # {"error":"unauthorized"} (401, the two secrets disagree) are very
+          # different problems. The curl exit is captured rather than left to
+          # `set -e` so we always reach the echo/cat below and the operator sees
+          # that body — then the step fails on purpose.
+          # -sS keeps the log clean but still shows transport errors. The secret
+          # goes in via a header from an env var, never the command line.
+          # Never let a body from an earlier attempt be printed as if it were
+          # this one's — on a transport error curl writes nothing at all.
+          rm -f response.json
+
+          curl_exit=0
+          http_code=$(curl -sS --fail-with-body \
+            --max-time 300 \
+            --retry 2 --retry-delay 10 --retry-all-errors \
+            -H "Authorization: Bearer ${CRON_SECRET}" \
+            -o response.json \
+            -w '%{http_code}' \
+            "${APP_URL%/}/api/cron/hubspot-sync") || curl_exit=$?
+
+          echo "HTTP ${http_code:-none}"
+          echo "--- response ---"
+          cat response.json 2>/dev/null || echo "(no response body)"
+          echo ""
+
+          # A genuine failure — non-2xx, or a transport error / timeout — fails
+          # the job loudly. This is the alert that the sync has actually stopped.
+          if [ "${curl_exit}" -ne 0 ]; then
+            echo "::error::hubspot-sync failed: curl exit ${curl_exit}, HTTP ${http_code:-none}. See the response body above."
+            exit 1
+          fi
+
+          # Surface the per-record error count in the run summary without
+          # failing: these are data problems for a human, not job failures.
+          if command -v jq >/dev/null 2>&1; then
+            errors=$(jq -r '.errors | length // 0' response.json 2>/dev/null || echo 0)
+            if [ "${errors}" != "0" ]; then
+              echo "::warning::hubspot-sync reported ${errors} per-record error(s) — see the response above."
+            fi
+          fi

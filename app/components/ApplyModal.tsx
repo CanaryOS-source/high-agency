@@ -5,6 +5,7 @@ import {
   submitApplication,
   type ApplicationRecord,
 } from "../lib/firebase";
+import { notifyHubspotApplication } from "../lib/hubspotClient";
 
 const STORAGE_KEY = "ha_application";
 // Founding Batch 01 targets high-school operators — collect exact age 12–18.
@@ -257,6 +258,10 @@ export default function ApplyModal({
     };
     try {
       const record = await submitApplication(input);
+      // Fire-and-forget: get the applicant into the CRM now rather than on the
+      // next cron tick. Never awaited, never checked — a HubSpot problem must
+      // not touch the success screen below.
+      notifyHubspotApplication(record.docId);
       try {
         localStorage.setItem(STORAGE_KEY, JSON.stringify(record));
       } catch {}
