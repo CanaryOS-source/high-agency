@@ -60,8 +60,13 @@ export interface ApplicationInput {
   name: string;
   email: string;
   age: string;
+  /** LinkedIn or personal site. Optional — empty string when not provided. */
+  social: string;
   building: string;
   boldest: string;
+  impact: string;
+  problem: string;
+  plan: string;
 }
 
 export interface ApplicationRecord extends ApplicationInput {
@@ -96,11 +101,17 @@ export async function submitApplication(
 
     const appRef = doc(col); // new auto-id within the create-only collection
     tx.set(appRef, {
+      // name/email/age/building/boldest keep their original names so the
+      // applications already on record stay readable alongside the new ones.
       name: input.name,
       email: input.email,
       age: input.age,
+      social: input.social,
       building: input.building,
       boldest: input.boldest,
+      impact: input.impact,
+      problem: input.problem,
+      plan: input.plan,
       opId: id,
       queuePos: pos,
       createdAt: serverTimestamp(),

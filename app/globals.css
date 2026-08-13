@@ -50,6 +50,7 @@
   --success: #3F8F1C;
   --warn:    #C2790F;   /* returned ≠ rejected — never red */
   --danger:  #D63A2C;   /* errors only, never ember */
+  --danger-soft: rgba(214, 58, 44, 0.14);
 
   /* ---- The one soft shadow (floating chrome only) ---- */
   --shadow-pop: 0 6px 16px rgba(60, 48, 30, 0.10), 0 18px 40px rgba(60, 48, 30, 0.12);
@@ -492,6 +493,18 @@ button { font-family: inherit; cursor: pointer; border: none; background: none; 
 .field input::placeholder, .field textarea::placeholder, .input::placeholder { color: var(--text-faint); }
 .field input + input { margin-top: 8px; }
 .field__hint { display: block; font-size: 13px; color: var(--text-faint); margin-top: 6px; }
+/* Word counter — only rendered once an answer is over its limit, so it is
+   always in the error voice. Nothing is reserved for it while it's silent. */
+.field__count {
+  display: block; font-family: var(--font-mono); font-size: 11px; font-weight: 600;
+  letter-spacing: 0.06em; color: var(--danger); margin-top: 6px;
+  animation: countIn var(--t-med) var(--ease-out);
+}
+@keyframes countIn { from { opacity: 0; transform: translateY(-4px); } }
+.field textarea[aria-invalid="true"] { border-color: var(--danger); }
+.field textarea[aria-invalid="true"]:focus {
+  border-color: var(--danger); box-shadow: 0 0 0 3px var(--danger-soft);
+}
 .field-row { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
 
 .choices { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; }
@@ -742,16 +755,22 @@ button { font-family: inherit; cursor: pointer; border: none; background: none; 
 .modal__scrim { position: absolute; inset: 0; background: rgba(33, 28, 23, 0.35); -webkit-backdrop-filter: blur(6px); backdrop-filter: blur(6px); animation: fade var(--t-fast) ease; }
 @keyframes fade { from { opacity: 0; } }
 .modal__card {
+  /* Shared by .modal__close and anything that has to steer clear of it. */
+  --modal-pad: clamp(22px, 4vw, 36px);
+  --modal-close-inset: 16px;
+  --modal-close-size: 38px;
   position: relative; width: 100%; max-width: 520px;
   background: var(--surface); border: 2px solid var(--border);
   border-radius: var(--radius-lg);
-  padding: clamp(22px, 4vw, 36px); max-height: 92vh; overflow-y: auto;
+  padding: var(--modal-pad); max-height: 92vh; overflow-y: auto;
   box-shadow: var(--shadow-pop);
   animation: sheetIn var(--t-med) var(--ease-spring);
 }
 @keyframes sheetIn { from { opacity: 0; transform: translateY(16px) scale(0.98); } }
 .modal__close {
-  position: absolute; top: 16px; right: 16px; width: 38px; height: 38px;
+  position: absolute;
+  top: var(--modal-close-inset, 16px); right: var(--modal-close-inset, 16px);
+  width: var(--modal-close-size, 38px); height: var(--modal-close-size, 38px);
   border-radius: var(--radius-sm); border: 2px solid var(--border-strong);
   display: grid; place-items: center; color: var(--text-muted);
   box-shadow: 0 2px 0 var(--border-strong);
@@ -759,7 +778,17 @@ button { font-family: inherit; cursor: pointer; border: none; background: none; 
 }
 .modal__close:hover { color: var(--text); background: var(--surface-2); }
 .modal__close:active { transform: translateY(2px); box-shadow: none; }
-.modal__progress { display: flex; gap: 6px; margin-bottom: 22px; }
+/* The track sits on the same line as the close button, so it reserves that
+   column instead of running under it. The close button's left edge is
+   (inset + size) in from the padding box; the track already clears the card's
+   own padding, so it only needs the remainder plus a 12px breathing gap.
+   Dots stay flex:1, so they simply get shorter rather than wrapping. */
+.modal__progress {
+  display: flex; gap: 6px;
+  margin: 0 max(0px, calc(
+    var(--modal-close-inset, 16px) + var(--modal-close-size, 38px) + 12px - var(--modal-pad, 22px)
+  )) 22px 0;
+}
 .modal__progress span { height: 8px; flex: 1; background: var(--surface-2); border-radius: var(--radius-pill); transition: background var(--t-med); }
 .modal__progress span.on { background: var(--accent); }
 .modal h3 { font-size: clamp(23px, 3vw, 28px); font-weight: 800; letter-spacing: -0.02em; margin-bottom: 6px; }
