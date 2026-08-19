@@ -14,6 +14,87 @@ import waitingRoom from "./components/ascii/programs/waitingRoom";
 import trajectory from "./components/ascii/programs/trajectory";
 import engineBurn from "./components/ascii/programs/engineBurn";
 import { PLATFORM_ENABLED } from "./lib/flags";
+import { fetchReferralCounter } from "./lib/firebase";
+import {
+  REFERRAL_JUMP,
+  REFERRAL_PARAM,
+  normalizeReferralCode,
+} from "./lib/referral";
+
+const APPLICATION_KEY = "ha_application";
+const REFERRAL_KEY = "ha_ref";
+
+/**
+ * Resolve the referral code this visitor arrived on, once, on mount.
+ *
+ * Read straight off `window.location` rather than through `useSearchParams`:
+ * this component is the whole marketing page, and that hook would drop the
+ * entire tree out of the prerender (see the Suspense note in the Next docs for
+ * useSearchParams). A code in the URL is a client-only concern — the static
+ * HTML is identical either way.
+ *
+ * The code survives in sessionStorage so it still applies after the visitor
+ * has clicked around the page, and the query string is scrubbed from the URL
+ * so nobody re-shares a link that credits someone else.
+ */
+function useReferralCode(): string {
+  const [code, setCode] = useState("");
+
+  useEffect(() => {
+    let live = true;
+    let incoming = "";
+    try {
+      const url = new URL(window.location.href);
+      incoming = normalizeReferralCode(url.searchParams.get(REFERRAL_PARAM));
+      if (!incoming) incoming = normalizeReferralCode(sessionStorage.getItem(REFERRAL_KEY));
+      if (url.searchParams.has(REFERRAL_PARAM)) {
+        url.searchParams.delete(REFERRAL_PARAM);
+        window.history.replaceState(null, "", url.toString());
+      }
+    } catch {
+      return;
+    }
+    if (!incoming) return;
+
+    // Nobody refers themselves. The saved receipt knows this visitor's own
+    // code, so the loop is closed before it ever reaches Firestore.
+    try {
+      const saved = JSON.parse(localStorage.getItem(APPLICATION_KEY) || "null");
+      if (saved?.referralCode === incoming) return;
+    } catch {}
+
+    // One read, and only for a visitor who actually followed a link: an
+    // unknown code must not put a banner on the page promising a boost that
+    // the write path would then decline to give.
+    fetchReferralCounter(incoming).then((counter) => {
+      if (!live || !counter) return;
+      try {
+        sessionStorage.setItem(REFERRAL_KEY, incoming);
+      } catch {}
+      setCode(incoming);
+    });
+
+    return () => {
+      live = false;
+    };
+  }, []);
+
+  return code;
+}
+
+/** The "you were invited" line. Renders nothing until a code has resolved. */
+function ReferralBanner({ code }: { code: string }) {
+  if (!code) return null;
+  return (
+    <Reveal className="invited" d={1}>
+      <span className="invited__mark" aria-hidden="true" />
+      <span>
+        <b>You were invited.</b> Apply and your referrer moves up{" "}
+        {REFERRAL_JUMP} places.
+      </span>
+    </Reveal>
+  );
+}
 
 function CaptureForm({
   label,
@@ -56,11 +137,12 @@ export default function Waitlist() {
   const [modalOpen, setModalOpen] = useState(false);
   const [prefillEmail, setPrefillEmail] = useState("");
   const [applied, setApplied] = useState(false);
+  const referredBy = useReferralCode();
 
   useEffect(() => {
     try {
       const saved = JSON.parse(
-        localStorage.getItem("ha_application") || "null"
+        localStorage.getItem(APPLICATION_KEY) || "null"
       );
       if (saved && saved.submitted) setApplied(true);
     } catch {}
@@ -130,6 +212,7 @@ export default function Waitlist() {
               <Reveal className="capture__note" d={3}>
                 <span><b>By application</b> · Free · Ages 13–19</span>
               </Reveal>
+              <ReferralBanner code={referredBy} />
             </div>
           </div>
         </section>
@@ -464,6 +547,7 @@ export default function Waitlist() {
       <ApplyModal
         open={modalOpen}
         prefillEmail={prefillEmail}
+        referredBy={referredBy}
         onClose={() => setModalOpen(false)}
         onApplied={() => setApplied(true)}
       />

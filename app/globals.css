@@ -811,6 +811,53 @@ button { font-family: inherit; cursor: pointer; border: none; background: none; 
 .success__q { display: inline-flex; align-items: baseline; gap: 8px; margin-top: 6px; font-size: 13px; color: var(--text-faint); }
 .success__q .n { font-family: var(--font-mono); font-size: 26px; color: var(--text); font-weight: 700; letter-spacing: -0.03em; }
 
+/* referral share — earned progress, so lime rather than ember, with the one
+   ember accent reserved for the eyebrow that names the action. */
+.refer {
+  margin-top: 22px; text-align: left;
+  border: 1px solid var(--signal-line); border-radius: var(--radius-tile);
+  background: linear-gradient(var(--signal-soft), var(--signal-soft)), var(--surface);
+  box-shadow: 0 4px 0 var(--signal-line);
+  padding: 18px;
+}
+.refer__head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 10px; }
+.refer__count { font-family: var(--font-mono); font-size: 13px; font-weight: 700; color: var(--signal-text); letter-spacing: 0.04em; }
+.refer__copy { font-size: 14px; color: var(--text-muted); margin: 0 0 14px; }
+.refer__copy b { color: var(--text); font-weight: 700; }
+
+.refer__pips { display: flex; gap: 6px; margin-bottom: 14px; }
+.refer__pips span {
+  height: 8px; flex: 1; border-radius: var(--radius-pill);
+  background: var(--surface-2); transition: background var(--t-med);
+}
+.refer__pips span.on { background: var(--signal); box-shadow: inset 0 0 0 1px var(--signal-line); }
+
+.refer__link { display: flex; gap: 8px; align-items: stretch; }
+.refer__link input {
+  flex: 1; min-width: 0;
+  font-family: var(--font-mono); font-size: 13px; color: var(--text);
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: var(--radius-sm); padding: 11px 12px; outline: none;
+  text-overflow: ellipsis;
+}
+.refer__link input:focus { border-color: var(--signal-line); }
+.refer__btn { flex: 0 0 auto; }
+
+.refer__foot { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin-top: 14px; }
+.refer__pos { font-size: 13px; color: var(--text-faint); }
+.refer__pos b { font-family: var(--font-mono); font-size: 20px; color: var(--text); font-weight: 700; letter-spacing: -0.02em; }
+.refer__left { font-size: 12px; color: var(--text-faint); }
+
+/* "you were invited" line under the hero capture form */
+.invited {
+  display: inline-flex; align-items: center; gap: 10px; margin-top: 14px;
+  padding: 9px 14px 9px 12px; border-radius: var(--radius-pill);
+  border: 1px solid var(--signal-line); background: var(--signal-soft);
+  font-size: 13px; color: var(--text-muted);
+}
+.invited b { color: var(--signal-text); font-weight: 700; }
+.invited__mark { width: 8px; height: 8px; border-radius: var(--radius-pill); background: var(--signal-press); flex: 0 0 auto; }
+
 /* ============================================================
    AUTH / ONBOARDING
    ============================================================ */

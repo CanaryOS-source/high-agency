@@ -189,11 +189,42 @@ Types live in [`app/lib/types.ts`](app/lib/types.ts); data access in
 - **Matching** ([`app/lib/match.ts`](app/lib/match.ts)) — tag overlap + timezone band +
   skills-wanted scoring with "why matched" chips. No embeddings yet (deliberate).
 
+## Waitlist referrals
+
+The public waitlist has a referral loop: share your link, and every person who
+applies through it moves you up the queue — up to **5 of them**, **10 places each**
+([`app/lib/referral.ts`](app/lib/referral.ts) `REFERRAL_MAX` / `REFERRAL_JUMP`).
+
+**The whole design is "arithmetic on one document, never a re-sort of the queue."**
+Every applicant gets one public counter at **`referrals/{code}`** — a random 6-character
+code (doc id), the public `opId`, `basePos`, `confirmed`, `credited`, and a denormalised
+`pos`. Displayed position is always `max(1, basePos − credited × 10)`, so crediting a
+referral is a single increment on a single doc: no fan-out, no query, nobody else's row
+moves. Cost is flat as the list grows — **2 reads (3 when referred) and 4 writes per
+signup**, one read to resolve an incoming `?ref=`, one read to render the share screen.
+
+- **"Confirmed" means the referred person completed the application**, credited inside the
+  same transaction as their own signup. There is no pending state and no confirmation
+  email; if double opt-in is wanted later, the hook is a `pending → confirmed` transition
+  on the counter.
+- **The counter is PII-free and world-readable** — a signed-out visitor on a `?ref=` link
+  has to resolve it. Attribution (`referralCode` / `referredBy`) lives on the create-only
+  `applications` doc instead, so who referred whom is never a readable graph.
+- **Positions are per-operator arithmetic, so two people can show the same number** once
+  referrals land. That is the deliberate trade for O(1) writes.
+- **Three implementations of the position model must agree**: `app/lib/referral.ts`,
+  the `referralPos()`/`referralCounted()` helpers in [`firestore.rules`](firestore.rules)
+  (rules have no `min`/`max`, so they spell it out in ternaries), and the mirror in
+  `tests/referral.test.mts`. The first test in that file pins all three together — change
+  the cap or the jump in one place and it fails.
+
 ## Codebase map
 
 - `app/page.tsx` + `app/Waitlist.tsx` + `app/components/*` — the public **waitlist /
   marketing** site at `/` (outside the platform shell; writes to the `applications`
   collection via [`app/lib/firebase.ts`](app/lib/firebase.ts) `submitApplication`).
+  It also carries the **referral loop**: `?ref=CODE` → banner on the hero →
+  `ApplyModal` → `ReferralShare` on the success step. See Waitlist referrals below.
 - `app/(platform)/` — the authenticated **product**, wrapped by
   [`app/(platform)/layout.tsx`](app/(platform)/layout.tsx) (AuthProvider + role-aware Shell;
   only `/login`, `/onboarding`, and `/mentor/join` render "bare"). **Operator routes:**
@@ -220,7 +251,9 @@ Types live in [`app/lib/types.ts`](app/lib/types.ts); data access in
   `UNASSIGNED_SCAN_LIMIT` in `db.ts`) and the UI says so when a list is truncated.
 - `app/lib/` — `types.ts`, `firebase.ts` (config + waitlist), `db.ts` (all Firestore CRUD +
   live `watch*` subscriptions), `gamify.ts` (XP/levels/streaks/entitlements), `milestones.ts`
-  (the track), `match.ts` (cohort matching), `flags.ts` (`PLATFORM_ENABLED` build-time flag).
+  (the track), `match.ts` (cohort matching), `referral.ts` (waitlist referral constants +
+  position arithmetic, shared by the browser, the write path and the rules tests),
+  `flags.ts` (`PLATFORM_ENABLED` build-time flag).
   Plus the deletable gate trio: `accessGate.ts` (server: allowlist lookup + rate limit),
   `accessEmail.ts` (server: sign-in-link mail), `accessClient.ts` (browser: fetch wrappers).
 - `proxy.ts` (repo root) — Next 16 `proxy` (the renamed `middleware`). When `PLATFORM_ENABLED`
@@ -280,10 +313,12 @@ node scripts/approve.js <email> mentor      # founding-batch allowlist (also: op
 node scripts/cleanup-test.js <cohortId>     # remove smoke-test artifacts
 
 # Tests (wrap the Firestore emulator; pinned firebase-tools@13 devDep):
-npm test             # rules + consent + mentor-invite suites
-npm run test:rules   # firestore.rules enforcement (tests/rules.test.mjs)
-npm run test:consent # server consent-token logic (tests/consent.test.mts)
-npm run test:mentor  # server mentor-invite logic (tests/mentorInvite.test.mts)
+npm test              # rules + referral + consent + mentor-invite + hubspot suites
+npm run test:rules    # firestore.rules enforcement (tests/rules.test.mjs)
+npm run test:referral # waitlist referral counters, rules + model (tests/referral.test.mts)
+npm run test:consent  # server consent-token logic (tests/consent.test.mts)
+npm run test:mentor   # server mentor-invite logic (tests/mentorInvite.test.mts)
+npm run test:hubspot  # CRM sync logic (tests/hubspot.test.mts)
 ```
 
 Beyond those suites, `scripts/` are manual smoke-test + seed/admin helpers.
@@ -314,4 +349,10 @@ Beyond those suites, `scripts/` are manual smoke-test + seed/admin helpers.
   trust the client otherwise). These are intentional shortcuts for the founding batch and the
   prime candidates to move into server actions/route handlers. Don't treat them as airtight.
 - **`applications`** (waitlist) is a create-only, never-readable collection (applicant PII);
-  the only public readable is the `meta/waitlist` counter. Don't add read paths to it.
+  the only public readables are the `meta/waitlist` counter and the `referrals/{code}`
+  counters. Don't add read paths to `applications` — referral attribution lives on the
+  application doc precisely so the referral graph is never client-readable.
+- **Referral counters are written unauthenticated** (the waitlist is public). The rules
+  bound the *shape* of a write, not who makes it: +1 confirmed per write, `credited`
+  capped, `pos` recomputed exactly. A determined caller can still replay the +1 — same
+  client-trusted v1 posture as `meta/waitlist`, not an oversight.
