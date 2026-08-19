@@ -6,6 +6,7 @@ import {
   type ApplicationRecord,
 } from "../lib/firebase";
 import { notifyHubspotApplication } from "../lib/hubspotClient";
+import ReferralShare from "./ReferralShare";
 
 const STORAGE_KEY = "ha_application";
 // Founding Batch 01 targets high-school operators — collect exact age 12–18.
@@ -114,6 +115,8 @@ function WordField({
 interface ApplyModalProps {
   open: boolean;
   prefillEmail?: string;
+  /** Referral code this visitor arrived on, "" when they came in cold. */
+  referredBy?: string;
   onClose: () => void;
   onApplied: () => void;
 }
@@ -121,6 +124,7 @@ interface ApplyModalProps {
 export default function ApplyModal({
   open,
   prefillEmail,
+  referredBy = "",
   onClose,
   onApplied,
 }: ApplyModalProps) {
@@ -257,7 +261,7 @@ export default function ApplyModal({
       plan: plan.trim(),
     };
     try {
-      const record = await submitApplication(input);
+      const record = await submitApplication(input, referredBy);
       // Fire-and-forget: get the applicant into the CRM now rather than on the
       // next cron tick. Never awaited, never checked — a HubSpot problem must
       // not touch the success screen below.
@@ -287,7 +291,19 @@ export default function ApplyModal({
     } finally {
       setBusy(false);
     }
-  }, [name, email, age, social, building, boldest, impact, problem, plan, onApplied]);
+  }, [
+    name,
+    email,
+    age,
+    social,
+    building,
+    boldest,
+    impact,
+    problem,
+    plan,
+    referredBy,
+    onApplied,
+  ]);
 
   if (!open) return null;
 
@@ -511,12 +527,22 @@ export default function ApplyModal({
               <div className="success__id">
                 OPERATOR ID · <b>{result?.opId ?? "HA-000"}</b>
               </div>
-              <div className="success__q">
-                Position in queue{" "}
-                <span className="n">
-                  {result ? `#${result.queuePos}` : "-"}
-                </span>
-              </div>
+              {/* The offline fallback record has no counter document behind
+                  it, so there is no link worth sharing — show the plain queue
+                  number instead of a code that would credit nobody. */}
+              {result?.referralCode ? (
+                <ReferralShare
+                  code={result.referralCode}
+                  fallbackPos={result.queuePos}
+                />
+              ) : (
+                <div className="success__q">
+                  Position in queue{" "}
+                  <span className="n">
+                    {result ? `#${result.queuePos}` : "-"}
+                  </span>
+                </div>
+              )}
               <div className="modal__actions" style={{ marginTop: 30 }}>
                 <button
                   className="btn btn--ghost btn--block"

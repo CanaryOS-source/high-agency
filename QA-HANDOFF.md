@@ -96,6 +96,14 @@ The gate is enforced in the rules too, not just the UI: creating a
 allowlist. A repo rules file is not a deployed rules file — deploy it, or the
 production database is still running the old rules.
 
+**The waitlist referral loop needs this same deploy.** `referrals/{code}` is a
+new collection, and the old ruleset denies it. The apply form is written to
+survive that — a denied referral write is caught, logged as
+`[waitlist] referral write denied`, and retried without the referral half, so
+applications still land — but until the rules are deployed nobody gets a share
+link and no position ever moves. Deploy first, then check the browser console
+on one real submit: that warning means the rules are stale.
+
 ### 1d. Testing locally instead
 
 ```bash
@@ -328,6 +336,19 @@ own tags, XP labels shown to mentors who don't earn XP).
 - [ ] Enrolling in a workshop takes a seat; the seat count drops for everyone.
 - [ ] Minor account: consent banner appears, and applying / submitting / logging are
       blocked until granted.
+
+### Public waitlist — referrals
+- [ ] Apply from a clean browser: the success step shows a **share link** and
+      **0 / 5**, with the queue position beneath it.
+- [ ] Open that link in a different browser (or a private window): the hero shows
+      the **"You were invited"** line, and `?ref=…` is stripped from the URL bar.
+- [ ] Apply from that second browser → reopen the first one's Apply modal: the
+      count reads **1 / 5** and the position has dropped by **10**.
+- [ ] Following your **own** link shows no invited banner and credits nobody.
+- [ ] A junk code (`/?ref=ZZZZZZ`, `/?ref=nope`) shows no banner and still lets
+      the visitor apply normally.
+- [ ] After 5 confirmed referrals the position stops moving and the block reads
+      "You've climbed as far as referrals go."
 
 ### The full loop (both windows)
 - [ ] Student creates a squad → mentor adopts it → squad goes live once 3 members join.

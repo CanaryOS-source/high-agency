@@ -8,8 +8,17 @@ service cloud.firestore {
     //
     // Collection: applications (legacy public waitlist)
     //   Create-only from the waitlist form; never readable (minor PII).
+    //   Also carries the referral attribution (referralCode / referredBy) —
+    //   deliberately HERE rather than on the public counter, so who referred
+    //   whom is never a client-readable graph.
     //
     // Document: meta/waitlist — public counter only.
+    //
+    // Collection: referrals/{code} — public, PII-free waitlist referral
+    //   counters. One doc per applicant: share code, public operator id, base
+    //   queue position and how many people they've brought in. Readable by
+    //   anyone (a ?ref= link has to resolve for a signed-out visitor); writes
+    //   are shape-bounded rather than identity-bounded. See the block below.
     //
     // Collection: profiles/{uid} — the operator profile. Readable by any
     //   signed-in user (it IS the cohort application artifact). Privacy
@@ -147,7 +156,15 @@ service cloud.firestore {
                        validString(request.resource.data.name, 1, 120) &&
                        validString(request.resource.data.email, 3, 254) &&
                        validString(request.resource.data.building, 0, 2000) &&
-                       validString(request.resource.data.boldest, 0, 2000);
+                       validString(request.resource.data.boldest, 0, 2000) &&
+                       // Referral attribution. Optional so applications that
+                       // predate referrals still validate; bounded to a code so
+                       // this can't become a smuggling channel into the doc.
+                       (!('referralCode' in request.resource.data) ||
+                         request.resource.data.referralCode.matches('^[ABCDEFGHJKMNPQRSTVWXYZ23456789]{6}$')) &&
+                       (!('referredBy' in request.resource.data) ||
+                         request.resource.data.referredBy == '' ||
+                         request.resource.data.referredBy.matches('^[ABCDEFGHJKMNPQRSTVWXYZ23456789]{6}$'));
       allow read, update, delete: if false;
     }
 
@@ -157,6 +174,79 @@ service cloud.firestore {
                       request.resource.data.count is number &&
                       request.resource.data.count >= 0 &&
                       request.resource.data.count < 1000000;
+    }
+
+    // ===============================================================
+    // Waitlist referrals — the public counter collection
+    // ===============================================================
+    //
+    // referrals/{code} is the ONLY readable half of the waitlist. It carries
+    // no PII by construction: a random share code, the public operator id
+    // ("HA-052"), and three numbers. Attribution (who referred whom) stays on
+    // the create-only application document, where it is never client-readable.
+    //
+    // World-readable because a signed-out visitor arriving on ?ref=CODE has to
+    // be able to resolve it, and because the share screen renders the owner's
+    // standing from this one document — one read, no query, no fan-out.
+    //
+    // The whole position model is arithmetic on this doc: pos is always
+    // basePos - credited * REFERRAL_JUMP, floored at 1. Mirror any change here
+    // in app/lib/referral.ts (REFERRAL_MAX / REFERRAL_JUMP) — the two are a
+    // pair, and the update rule below is what actually enforces the cap.
+    //
+    // Writes are unauthenticated (the waitlist is public, same posture as the
+    // meta/waitlist counter above), so the rule bounds what a write can do
+    // rather than who may do it: create must start at zero, update may only
+    // ever add ONE confirmed referral, may never push credited past the cap,
+    // and must recompute pos exactly. Identity fields are frozen after create.
+    // A determined caller can still replay the +1 — that is the same
+    // client-trusted v1 posture as the queue counter, not an oversight.
+
+    function referralCounted(credited) {
+      // min(credited, REFERRAL_MAX) — rules have no min().
+      return credited < 5 ? credited : 5;
+    }
+
+    function referralPos(basePos, credited) {
+      // max(1, basePos - credited * REFERRAL_JUMP) — rules have no max().
+      return basePos - referralCounted(credited) * 10 > 1
+        ? basePos - referralCounted(credited) * 10
+        : 1;
+    }
+
+    match /referrals/{code} {
+      allow read: if true;
+
+      allow create: if code.matches('^[ABCDEFGHJKMNPQRSTVWXYZ23456789]{6}$') &&
+                       request.resource.data.keys().hasOnly(
+                         ['code', 'opId', 'basePos', 'confirmed', 'credited',
+                          'pos', 'createdAt', 'updatedAt']) &&
+                       request.resource.data.keys().hasAll(
+                         ['code', 'opId', 'basePos', 'confirmed', 'credited',
+                          'pos', 'createdAt', 'updatedAt']) &&
+                       request.resource.data.code == code &&
+                       validString(request.resource.data.opId, 1, 20) &&
+                       request.resource.data.basePos is int &&
+                       request.resource.data.basePos > 0 &&
+                       request.resource.data.basePos < 1000000 &&
+                       request.resource.data.confirmed == 0 &&
+                       request.resource.data.credited == 0 &&
+                       request.resource.data.pos == request.resource.data.basePos &&
+                       request.resource.data.createdAt is timestamp &&
+                       request.resource.data.updatedAt is timestamp;
+
+      // One confirmed referral at a time, and nothing else moves.
+      allow update: if request.resource.data.diff(resource.data).affectedKeys()
+                         .hasOnly(['confirmed', 'credited', 'pos', 'updatedAt']) &&
+                       request.resource.data.confirmed == resource.data.confirmed + 1 &&
+                       request.resource.data.confirmed < 1000000 &&
+                       request.resource.data.credited ==
+                         referralCounted(resource.data.credited + 1) &&
+                       request.resource.data.pos ==
+                         referralPos(resource.data.basePos, request.resource.data.credited) &&
+                       request.resource.data.updatedAt is timestamp;
+
+      allow delete: if false;
     }
 
     // ===============================================================
