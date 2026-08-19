@@ -20,7 +20,11 @@
  * If HUBSPOT_ACCESS_TOKEN is unset every entry point returns a "skipped"
  * summary instead of throwing. We do not have a portal token yet.
  */
-import { FieldValue, type Firestore } from "firebase-admin/firestore";
+import {
+  FieldValue,
+  type Firestore,
+  type QueryDocumentSnapshot,
+} from "firebase-admin/firestore";
 import { adminAuth, adminDb } from "./firebaseAdmin";
 import { APPROVED_MEMBERS, isValidEmail, normalizeEmail } from "./accessGate";
 import {
@@ -36,9 +40,12 @@ import {
   approvedMemberToProperties,
   hubspotEmail,
   nameParts,
+  referralCountProperties,
+  referralSourceFor,
   type ApplicationDoc,
   type ApprovedMemberDoc,
   type PropertyBag,
+  type ReferralFacts,
 } from "./hubspotMapping";
 import {
   APPLICATION_STATUS,
@@ -47,7 +54,13 @@ import {
   MEMBER_ROLE,
   MEMBER_STATUS,
   P,
+  REFERRAL_SOURCE,
 } from "./hubspotSchema";
+import {
+  REFERRALS_COLLECTION,
+  STAFF_COUNTER_KIND,
+  normalizeReferralCode,
+} from "./referral";
 import { sendApprovalEmail } from "./hubspotEmail";
 
 export const APPLICATIONS = "applications";
@@ -61,6 +74,33 @@ export const PROFILES = "profiles";
  * `truncated` rather than silently syncing a subset.
  */
 export const RECONCILE_SCAN_LIMIT = 500;
+
+/**
+ * How many APPLICATIONS a standalone referral-count refresh considers. When the
+ * refresh runs as part of reconcile it is handed that pass's application page
+ * instead, so the whole run shares one bound.
+ */
+export const REFERRAL_REFRESH_LIMIT = 200;
+
+/**
+ * Hard ceiling on HubSpot writes in one refresh pass, so a first run after the
+ * property is added cannot turn into an unbounded burst of API calls. Hitting
+ * it sets `truncated`; the next pass picks up where this one stopped, because
+ * everything written becomes `unchanged` and is skipped.
+ */
+export const REFERRAL_REFRESH_MAX_WRITES = 50;
+
+/** Documents per batched `getAll`. Firestore handles far more, but a bounded
+ *  chunk keeps one round trip predictable in size. */
+const REFERRAL_READ_CHUNK = 100;
+
+/**
+ * Field on the application document mirroring the `confirmed` count we last
+ * wrote to HubSpot. It is the change detector: a refresh pass that finds it
+ * already equal to the live counter makes NO HubSpot call at all, which is what
+ * keeps a five-minute cron from being N writes every five minutes.
+ */
+export const REFERRAL_MIRROR_FIELD = "hubspotReferralConfirmed";
 
 /** Marker written onto an allowlist entry the CRM created. The decline path
  *  will only ever delete an entry carrying this — a hand-added mentor is not
@@ -85,6 +125,9 @@ export interface ReconcileSummary {
   pushedMembers: number;
   approvals: number;
   declines: number;
+  /** Contacts whose referral count actually MOVED this pass. Zero is the
+   *  normal, healthy reading — see refreshReferralCounts. */
+  refreshedReferrals: number;
   /** True when a bounded read hit its ceiling and more work remains. */
   truncated: boolean;
   errors: SyncError[];
@@ -96,6 +139,7 @@ function emptySummary(): ReconcileSummary {
     pushedMembers: 0,
     approvals: 0,
     declines: 0,
+    refreshedReferrals: 0,
     truncated: false,
     errors: [],
   };
@@ -114,6 +158,58 @@ function reason(err: unknown): string {
 export type PushResult =
   | { status: "pushed"; contactId: string }
   | { status: "skipped"; reason: string };
+
+/**
+ * The two referral facts an application document cannot answer on its own:
+ * what KIND of link brought this person in, and how many people their own link
+ * has brought in so far.
+ *
+ * Costs at most two document reads, both by id, both against the public
+ * PII-free counters. It runs once per application push — never inside the
+ * signup transaction, which stays HubSpot-free and Firestore-only.
+ *
+ * An application with no `referredBy` FIELD (the three legacy records, and the
+ * referral-free fallback write) reports no source at all rather than `direct`:
+ * "arrived before referrals existed" is not the same claim as "arrived cold",
+ * and a segment built on the wrong one is worse than a blank.
+ */
+export async function resolveReferralFacts(
+  app: ApplicationDoc,
+  db: Firestore = adminDb()
+): Promise<ReferralFacts> {
+  const facts: ReferralFacts = {};
+  const counters = db.collection(REFERRALS_COLLECTION);
+
+  try {
+    if (typeof app.referredBy === "string") {
+      const incoming = normalizeReferralCode(app.referredBy);
+      if (!incoming) {
+        facts.source = REFERRAL_SOURCE.direct;
+      } else {
+        const snap = await counters.doc(incoming).get();
+        facts.source = referralSourceFor(
+          incoming,
+          snap.exists ? (snap.data() ?? null) : null
+        );
+      }
+    }
+
+    const own = normalizeReferralCode(app.referralCode);
+    if (own) {
+      const snap = await counters.doc(own).get();
+      const confirmed = snap.exists ? snap.data()?.confirmed : undefined;
+      if (typeof confirmed === "number" && Number.isFinite(confirmed)) {
+        facts.confirmed = confirmed;
+      }
+    }
+  } catch {
+    // Attribution is analytics. Losing it must never stop an applicant from
+    // reaching the CRM, so a read failure degrades to "no facts".
+    return facts;
+  }
+
+  return facts;
+}
 
 /**
  * Push one application to HubSpot and stamp the link back onto the Firestore
@@ -145,7 +241,8 @@ export async function pushApplication(
 
   // Doc id last: a stray `id` field inside the document must not shadow it.
   const app: ApplicationDoc = { ...data, id: snap.id };
-  const props = applicationToProperties(app);
+  const referral = await resolveReferralFacts(app, db);
+  const props = applicationToProperties(app, referral);
 
   const existing = await getContactByEmail(email, [
     P.applicationStatus,
@@ -174,7 +271,16 @@ export async function pushApplication(
   const contactId = await upsertContactByEmail(email, props);
 
   await ref.set(
-    { hubspotContactId: contactId, hubspotSyncedAt: FieldValue.serverTimestamp() },
+    {
+      hubspotContactId: contactId,
+      hubspotSyncedAt: FieldValue.serverTimestamp(),
+      // Seed the change detector with whatever this push just wrote, so the
+      // next refresh pass has something to compare against instead of
+      // re-pushing a number HubSpot already has.
+      ...(referral.confirmed !== undefined
+        ? { [REFERRAL_MIRROR_FIELD]: referral.confirmed }
+        : {}),
+    },
     { merge: true }
   );
 
@@ -574,6 +680,172 @@ async function markSynced(
 }
 
 /* ------------------------------------------------------------------ */
+/* Refresh: referral counts                                            */
+/* ------------------------------------------------------------------ */
+
+export interface ReferralRefreshSummary {
+  skipped?: "hubspot-not-configured";
+  /** Contacts actually patched. */
+  refreshed: number;
+  /** Counters looked at and found unchanged — no HubSpot call made. */
+  unchanged: number;
+  truncated: boolean;
+  errors: SyncError[];
+}
+
+/**
+ * Keep `ha_referral_confirmed` current, cheaply — and drive it from the
+ * AUTHORITATIVE side.
+ *
+ * An application is pushed to HubSpot exactly once, at signup, when its own
+ * referral count is necessarily zero. Without this pass the property would read
+ * 0 forever and be worse than useless. But a naive "re-push everyone on every
+ * tick" is dozens of HubSpot writes every five minutes for a number that
+ * changes a handful of times a week.
+ *
+ * The candidate set is the load-bearing decision. It comes from `applications`,
+ * NOT from `referrals`:
+ *
+ *   `referrals` is a PUBLIC, unauthenticated-writable collection — the waitlist
+ *   has to be able to mint and credit counters for signed-out visitors. So
+ *   anyone can create counters with `confirmed > 0`. A bounded query over that
+ *   collection (`where confirmed > 0` + `limit`) applies its limit BEFORE any
+ *   ownership filtering, and Firestore's ordering is stable, so a cheap flood
+ *   of ownerless counters would occupy the first page forever and real
+ *   applicants' counts would never be refreshed again. That is starvation by
+ *   anyone with a browser, and no cursor fixes it — the flood outnumbers the
+ *   real rows on every page.
+ *
+ *   Applications are create-only, carry the applicant's own minted code, and
+ *   are stamped with `hubspotContactId` by the Admin SDK. Driving from them
+ *   means an ownerless counter is never even a candidate: it has no application
+ *   pointing at it, so it is never read and never considered.
+ *
+ * The rest is unchanged and still cheap:
+ *
+ *   1. Take the applications that have a code AND have been pushed. Counters
+ *      are then read BY ID, batched — never queried, so nothing a stranger
+ *      writes can affect which ones we look at.
+ *   2. Compare against REFERRAL_MIRROR_FIELD — what we last told HubSpot. Equal
+ *      means no API call at all. This is the change detection that makes the
+ *      five-minute cadence safe.
+ *   3. Only then patch the contact, and record the new value in the same shape
+ *      so the next pass sees it as unchanged. Bounded by
+ *      REFERRAL_REFRESH_MAX_WRITES per pass.
+ *
+ * Staff counters are skipped: they are nobody's application, so they never
+ * appear as candidates, and the one that could (a staff code someone also typed
+ * onto an application) is filtered by `kind`. Staff totals are answerable in
+ * HubSpot by filtering contacts on `ha_referred_by` = the staff code, which is
+ * a better number anyway — it is the list of people, not just the count.
+ *
+ * Idempotent, and safe to run concurrently with itself: every write is a
+ * value-equality-guarded upsert keyed on a stable id.
+ */
+export async function refreshReferralCounts(
+  db: Firestore = adminDb(),
+  /**
+   * The application page reconcile has already read. Passing it makes the
+   * refresh cost zero extra application reads and share one bound with the rest
+   * of the run. Omitted (tests, direct calls) it reads its own bounded page.
+   */
+  applications?: QueryDocumentSnapshot[]
+): Promise<ReferralRefreshSummary> {
+  if (!hubspotConfigured()) {
+    return {
+      skipped: "hubspot-not-configured",
+      refreshed: 0,
+      unchanged: 0,
+      truncated: false,
+      errors: [],
+    };
+  }
+
+  const errors: SyncError[] = [];
+  let refreshed = 0;
+  let unchanged = 0;
+  let truncated = false;
+
+  let candidates = applications;
+  if (!candidates) {
+    const snap = await db
+      .collection(APPLICATIONS)
+      .orderBy("createdAt", "desc")
+      .limit(REFERRAL_REFRESH_LIMIT)
+      .get();
+    candidates = snap.docs;
+    truncated = snap.size === REFERRAL_REFRESH_LIMIT;
+  }
+
+  // Newest first (the order both callers supply), so the applicants most likely
+  // to be accruing referrals right now are the ones inside the bound.
+  const owners = new Map<string, QueryDocumentSnapshot>();
+  for (const doc of candidates) {
+    const data = doc.data();
+    const code = normalizeReferralCode(data.referralCode);
+    // No code, or never pushed: nothing to refresh. A contact that does not
+    // exist must not be conjured by a patch — the push carries the count.
+    if (!code || !data.hubspotContactId) continue;
+    if (!owners.has(code)) owners.set(code, doc);
+  }
+  if (owners.size === 0) return { refreshed, unchanged, truncated, errors };
+
+  // Read the counters BY ID, batched. getAll takes a bounded list built above,
+  // so this is one round trip per chunk and reads nothing we did not ask for.
+  const codes = [...owners.keys()];
+  const counters = new Map<string, FirebaseFirestore.DocumentSnapshot>();
+  for (let i = 0; i < codes.length; i += REFERRAL_READ_CHUNK) {
+    const chunk = codes.slice(i, i + REFERRAL_READ_CHUNK);
+    const snaps = await db.getAll(
+      ...chunk.map((code) => db.collection(REFERRALS_COLLECTION).doc(code))
+    );
+    snaps.forEach((snap, n) => counters.set(chunk[n], snap));
+  }
+
+  for (const [code, appDoc] of owners) {
+    // The code is a document id and carries no PII — safe to name in an error.
+    const ref = `referral:${code}`;
+    try {
+      const snap = counters.get(code);
+      if (!snap?.exists) continue;
+      const data = snap.data() ?? {};
+
+      // A staff code cannot be an applicant's own code; if one is sitting in
+      // that field the record is wrong, and refreshing off it would report a
+      // staff lead count as somebody's personal referral total.
+      if (data.kind === STAFF_COUNTER_KIND) continue;
+
+      const confirmed = data.confirmed;
+      if (typeof confirmed !== "number" || !Number.isFinite(confirmed)) continue;
+
+      const appData = appDoc.data();
+      if (appData[REFERRAL_MIRROR_FIELD] === confirmed) {
+        unchanged++;
+        continue;
+      }
+
+      const email = hubspotEmail(appData.email);
+      if (!email || !isValidEmail(email)) continue;
+
+      if (refreshed >= REFERRAL_REFRESH_MAX_WRITES) {
+        // Stop calling HubSpot, but say so. Next pass resumes here, because
+        // everything already written now compares equal.
+        truncated = true;
+        break;
+      }
+
+      await upsertContactByEmail(email, referralCountProperties(confirmed));
+      await appDoc.ref.set({ [REFERRAL_MIRROR_FIELD]: confirmed }, { merge: true });
+      refreshed++;
+    } catch (err) {
+      errors.push({ stage: "refresh-referral", ref, message: reason(err) });
+    }
+  }
+
+  return { refreshed, unchanged, truncated, errors };
+}
+
+/* ------------------------------------------------------------------ */
 /* Reconcile                                                           */
 /* ------------------------------------------------------------------ */
 
@@ -594,7 +866,10 @@ export async function reconcile(
     return { ...summary, skipped: "hubspot-not-configured" };
   }
 
-  // 1. Applications that have never been pushed.
+  // 1. Applications that have never been pushed. The page is kept: step 4
+  //    refreshes referral counts off exactly these authoritative records, so
+  //    the whole run shares one bound and costs one application read.
+  let applicationPage: QueryDocumentSnapshot[] = [];
   try {
     const snap = await db
       .collection(APPLICATIONS)
@@ -602,6 +877,7 @@ export async function reconcile(
       .limit(RECONCILE_SCAN_LIMIT)
       .get();
     if (snap.size === RECONCILE_SCAN_LIMIT) summary.truncated = true;
+    applicationPage = snap.docs;
 
     for (const doc of snap.docs) {
       if (doc.data().hubspotSyncedAt) continue;
@@ -665,6 +941,28 @@ export async function reconcile(
     summary.errors.push({
       stage: "pull-decisions",
       ref: "search",
+      message: reason(err),
+    });
+  }
+
+  // 4. Referral counts that moved since the last pass. Usually a no-op, and
+  //    deliberately last: it is the least important thing in the run, and it
+  //    must never be the reason a decision did not get applied.
+  try {
+    // The page is deliberately the one read at the top of this run, NOT a
+    // re-read. An application step 1 just pushed carries no hubspotContactId in
+    // this snapshot, so it is skipped here — which is right: that push already
+    // wrote the current count. Everything else was stamped by an earlier run
+    // and is accurate. Re-reading to catch the first case would cost a second
+    // full page of reads every five minutes to save one redundant write.
+    const refresh = await refreshReferralCounts(db, applicationPage);
+    summary.refreshedReferrals = refresh.refreshed;
+    summary.truncated = summary.truncated || refresh.truncated;
+    summary.errors.push(...refresh.errors);
+  } catch (err) {
+    summary.errors.push({
+      stage: "refresh-referrals",
+      ref: REFERRALS_COLLECTION,
       message: reason(err),
     });
   }

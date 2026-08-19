@@ -10,10 +10,22 @@ portal (**ID 2410150**, Josh's portal), so that:
   to get an account while the founding-batch gate is up;
 - the contact data is clean enough to segment and mail from.
 
-> **Status: built, not yet switched on.** There is no portal token yet — HubSpot
-> only lets Super Admins create private apps, and the ask is out to Josh. Every
-> code path degrades to a silent no-op until `HUBSPOT_ACCESS_TOKEN` is set.
-> Nothing in the product breaks, 500s, or blocks a user in the meantime. That
+> **Status: live.** `HUBSPOT_ACCESS_TOKEN` is configured in production, the
+> property setup and the initial backfill have been run, every application on
+> record is stamped synced and present in the portal as a Contact, the approved
+> members are represented, and the five-minute GitHub Action reconcile returns
+> 200 with no errors.
+>
+> **Sending is NOT live and is not part of this integration.** The portal is on
+> HubSpot's free tools with zero Marketing Contacts, and the billing UI says
+> campaign targeting needs Marketing Hub. No list, sender, subscription type,
+> workflow or campaign has been configured, and nothing here sends a marketing
+> email. The one transactional mail this repo can send (the optional approval
+> note) goes out through **Resend**, not HubSpot, and stays off unless
+> `HUBSPOT_APPROVAL_EMAIL=on`.
+>
+> Every code path still degrades to a silent no-op when `HUBSPOT_ACCESS_TOKEN`
+> is unset — nothing in the product breaks, 500s, or blocks a user. That
 > behaviour is a hard requirement, not a nicety, and it is covered by tests.
 
 ---
@@ -27,6 +39,7 @@ portal (**ID 2410150**, Josh's portal), so that:
 | `applications/{id}` | Contact + `ha_*` application fields | On submit (fire-and-forget ping from the apply form), and on every reconcile for anything not yet stamped `hubspotSyncedAt` |
 | `approvedMembers/{email}` | Contact + `ha_member_status`, `ha_member_role`, `ha_platform_activated` | Every reconcile |
 | `profiles/{uid}` (existence only) | `ha_platform_activated = yes/no` | Every reconcile |
+| `referrals/{code}` (the applicant's own counter) | `ha_referral_confirmed` | On push, then only when the number actually moves — see [Referral attribution](#referral-attribution) |
 
 The push also stamps `hubspotContactId` and `hubspotSyncedAt` back onto the
 application document, which is how "already synced" is known.
@@ -68,6 +81,246 @@ Console or added with `scripts/approve.js`, and those entries have no
 alone and writes an explanation into `ha_sync_note` on the contact so a person
 sees it in HubSpot. Revoking that access is a deliberate manual act
 (`node scripts/approve.js <email> --remove`), never a side effect of a CRM edit.
+
+---
+
+## Referral attribution
+
+The waitlist referral loop is **Firestore-native and stays that way**: a
+`?ref=CODE` link resolves against `referrals/{code}`, and crediting a referral is
+one increment inside the signup transaction (see the Waitlist referrals section
+of `CLAUDE.md` and `app/lib/referral.ts`). HubSpot is told about it **for
+analytics only**. Nothing in the signup path calls HubSpot, and no referral
+decision has ever depended on it.
+
+| Property | What it is |
+| --- | --- |
+| `ha_referral_code` | This applicant's **own** share code. Filter contacts by `ha_referred_by` = this to list everyone they brought in. |
+| `ha_referred_by` | The code they **arrived on**. `""` means they came in cold; **blank** (no value) means the application predates referrals — those are different claims and are stored differently on purpose. |
+| `ha_referral_source` | `Staff promo code` / `Applicant referral` / `Direct`. Derived by the sync from the counter the incoming code resolved to. Editing it in HubSpot has no effect. |
+| `ha_referral_confirmed` | How many applications this applicant's own code has brought in. |
+
+**How to answer "how did Evelyn's post do?"** — filter contacts on
+`ha_referred_by` = her code (the provisioning script prints it, and
+`staffReferralCodes/{slug}` holds it). That gives you the people, not just a
+number. `ha_referral_source = Staff promo code` gives the staff-vs-organic split
+across the whole batch in one filter, without anyone having to keep a list of
+five codes up to date.
+
+### Keeping `ha_referral_confirmed` fresh, cheaply
+
+An application is pushed to HubSpot once, at signup, when its own referral count
+is necessarily zero — so without a refresh that property would read 0 forever.
+But re-pushing everyone on every five-minute tick would be dozens of API writes
+for a number that changes a handful of times a week. `refreshReferralCounts()`
+in `app/lib/hubspotSync.ts` is built the other way round:
+
+1. Take the candidates from **`applications`**, not from `referrals` — the ones
+   that carry a referral code and have already been pushed.
+2. Read those counters **by id**, batched.
+3. Compare against `hubspotReferralConfirmed` on the application document — what
+   we last told HubSpot. **Equal means no API call at all.** This is the change
+   detection that makes the cadence safe.
+4. Only then patch the contact — with that one property and nothing else — and
+   record the new value so the next pass sees it as unchanged.
+
+**Step 1 is a security property, not a style choice.** `referrals` is public and
+unauthenticated-writable, because a signed-out visitor on a `?ref=` link has to
+be able to resolve and credit a counter. So anyone can create counters carrying
+`confirmed > 0`. Finding work with `referrals where confirmed > 0` under a
+`limit()` applies that limit **before** any ownership filtering, and Firestore
+orders stably — so a cheap flood of ownerless counters would occupy the first
+page on every pass, forever, and no real applicant's count would ever be
+refreshed again. A cursor does not fix it: the flood outnumbers the real rows on
+every page too. Applications are create-only, carry the applicant's own minted
+code, and are stamped with `hubspotContactId` by the Admin SDK, so driving from
+them means an ownerless counter is never even a candidate. Regression tests
+(`tests/hubspot.test.mts`) bury a real applicant under more decoys than the
+limit and assert it still refreshes, across consecutive passes.
+
+When it runs inside `reconcile()` it is handed the application page that pass
+already read, so it costs **zero extra application reads** and shares one bound
+with the rest of the run. Called standalone it reads its own bounded page
+(`REFERRAL_REFRESH_LIMIT`, 200, newest first). HubSpot writes are capped per pass
+at `REFERRAL_REFRESH_MAX_WRITES` (50) so a first run after the property is added
+cannot become an unbounded burst; hitting either bound sets `truncated`, and the
+next pass resumes where this one stopped because everything written now compares
+equal. A healthy run reports `refreshedReferrals: 0`.
+
+Staff counters are skipped — they are nobody's application, so they never appear
+as candidates at all. Their totals are answerable by filtering contacts on
+`ha_referred_by` = the staff code, which is the better number anyway.
+
+**Cost, so nobody is surprised by a Firestore bill.** Inside `reconcile` the
+refresh adds only the batched counter reads: **one read per application that has
+a code and a contact**, and **zero HubSpot calls** when nothing moved. The
+application query is a plain `orderBy(createdAt)` and the counters are fetched
+by id, so there is no composite index and nothing to add to
+`firestore.indexes.json`.
+
+---
+
+## Marketing consent
+
+The application form carries an **optional, unchecked** box: *"Email me High
+Agency updates and future cohort opportunities. Optional — this has no effect on
+your application. Unsubscribe anytime."* It gates nothing; an application submits
+identically either way.
+
+| Property | What it is |
+| --- | --- |
+| `ha_marketing_consent` | `Yes` / `No`. **Blank means they applied before the box existed — which is NOT a yes.** |
+| `ha_marketing_consent_at` | Date the opt-in was given. Only set when it was. |
+| `ha_marketing_consent_source` | Where it was collected. Always exactly `waitlist` today — it is the only source, and both the rules and the mapping check for that string specifically. Only set when consent was given. |
+
+Three things to be clear about:
+
+- **These are plain custom properties, not HubSpot subscription state.** Nothing
+  can send off a custom property, so recording an intention here cannot become a
+  send by accident. Wiring them to a real subscription type is a separate,
+  deliberate act for whoever turns campaigns on.
+- **Nothing has been configured to send.** No list, no sender, no subscription
+  type, no workflow, no campaign, and no DNS/domain setup. This work recorded
+  consent and nothing else.
+- **Absent stays absent.** A legacy application never acquires a "no" it never
+  gave, because "no" and "never asked" are different segments.
+
+Firestore stores `marketingConsent` (boolean, always written on a new
+application), plus `marketingConsentAt` and `marketingConsentSource` **only when
+consent was given**.
+
+**An opt-in must carry its proof.** `firestore.rules` enforces one invariant in
+both directions:
+
+```
+marketingConsent == true
+  <=> marketingConsentAt == request.time  &  marketingConsentSource == 'waitlist'
+```
+
+The whole block stays optional, so every application already on record still
+validates and consent is never required to apply. But a `true` with no timestamp,
+no source, a source we do not recognise, or a **client-supplied** timestamp is
+refused outright — the comparison is against `request.time`, the value a
+`serverTimestamp()` sentinel resolves to, so consent cannot be backdated by
+whoever is writing. Proof without an opt-in is refused too: that shape would read
+in the CRM as evidence of a consent nobody gave.
+
+**And the mapping fails closed on top of that.** `applicationToProperties` only
+emits `Yes` for a record whose proof actually holds up (`marketingConsentState`
+in `app/lib/marketingConsent.ts`); anything incoherent maps to **nothing at
+all** rather than to a `Yes`, because the failure mode of treating a corrupt row
+as consent is mailing somebody who never agreed, and the failure mode of the
+reverse is a blank field a human can look into. `'waitlist'` is spelled out in
+`firestore.rules` (which cannot import) and pinned to `MARKETING_CONSENT_SOURCE`
+by a test.
+
+---
+
+## Staff referral codes
+
+Five people on the team need a referral link they can put in a post. They get a
+code and **nothing else** — no Auth user, no profile, no `approvedMembers` entry
+and no application. A staff member is not an applicant, and the founding-batch
+gate exists precisely to stop accounts appearing for people who were never
+approved.
+
+**The representation.** A staff code is the same document as an applicant's
+counter — same collection, same alphabet, same update rule — so an incoming
+`?ref=` resolves and credits through exactly one code path. Two things make it a
+lead-source counter rather than a queue position:
+
+- `kind: "staff"` — **unforgeable from a browser.** The `referrals` create rule
+  accepts an exact field list that does not include `kind`, so only the Admin
+  SDK can mint one. The update rule only touches `confirmed`/`credited`/`pos`/
+  `updatedAt`, so a client can credit a staff code but cannot strip the marker.
+- `basePos: 1` — the **fixed point** of the position arithmetic:
+  `max(1, 1 − credited×10) == 1` for every value, so the position never drifts
+  and the shared rule needs no branch for staff. The only number that means
+  anything on a staff counter is `confirmed`.
+
+The private half is `staffReferralCodes/{slug}` — slug → code, plus the name and
+Slack id. **Deny-all to clients** (same posture as `mentorInvites`), which is why
+the public counter carries neither a name nor a Slack id. Its only job is
+idempotency: without it, a second run would mint a second code for the same
+person and split their attribution in two.
+
+The public banner also changes for a staff link: "Someone on the High Agency team
+sent you this link", rather than promising a referrer a queue jump they have no
+position to take.
+
+### Runbook
+
+```bash
+# 1. Look before you write. Dry run is the DEFAULT — no flag needed.
+node scripts/staff-referrals.js
+
+# 2. Provision. Idempotent: anyone already provisioned is reported and skipped.
+node scripts/staff-referrals.js --apply
+
+# 3. Machine-readable, for pasting the links into Slack.
+node scripts/staff-referrals.js --apply --json | jq -r '.staff[] | "\(.name)\t\(.link)"'
+
+# Point the links at a local dev server instead of production:
+node scripts/staff-referrals.js --origin http://localhost:3000
+```
+
+Needs Firebase Admin credentials (the same env the HubSpot scripts and the
+Vercel deployment use — see `scripts/hubspot-common.js`). It does **not** touch
+HubSpot and it sends no email.
+
+**Output.** Human-readable by default; `--json` prints only JSON on stdout:
+
+```json
+{
+  "mode": "apply",
+  "origin": "https://high-agency.io",
+  "staff": [
+    { "slug": "evelyn-qiao", "name": "Evelyn Qiao", "slackId": "U09CSHVBLBZ",
+      "action": "created", "code": "K7M2QX",
+      "link": "https://high-agency.io/?ref=K7M2QX", "confirmed": 0 }
+  ],
+  "conflicts": [],
+  "ok": true
+}
+```
+
+`action` is one of `would-create` (dry run), `created`, `exists`, `conflict`.
+**Exit code is 1 when anything is a conflict**, 0 otherwise.
+
+### Recovery
+
+The script **never overwrites**. A staff code may already be printed in
+somebody's post, and detaching it silently loses every click that link has
+earned — so a mapping/counter pair that disagrees with itself is reported as a
+conflict and left exactly as it was. It refuses when: the mapping's code isn't a
+valid code; the mapping is recorded against a different Slack id than the roster;
+the counter the mapping points at is missing (a half-written pair); the counter
+carries a different code than its own id; the counter is not `kind: "staff"`
+(it may belong to a real applicant); or the counter has a real queue position.
+
+To resolve one, in the Firebase Console:
+
+- **Half-written pair** (mapping without counter, e.g. a crashed run): if the
+  link was never shared, delete `staffReferralCodes/{slug}` and re-run — a fresh
+  code is minted. If it *was* shared, re-create `referrals/{code}` by hand with
+  `{code, opId: "HA-STAFF", basePos: 1, confirmed: 0, credited: 0, pos: 1, kind:
+  "staff", createdAt, updatedAt}` so the live link keeps working.
+- **Counter is an applicant's** — do **not** delete it. Delete the
+  `staffReferralCodes/{slug}` mapping only, and re-run to mint a different code.
+- **Wrong Slack id** — decide who the code belongs to. Fix the roster in
+  `app/lib/staffReferrals.ts` if the roster is wrong; fix the mapping document if
+  the mapping is.
+
+**Full rollback** (the codes were never shared): delete the five
+`staffReferralCodes/*` documents and the five `referrals/{code}` documents they
+point at. Nothing else references them — no application, no profile, no
+allowlist entry — so there is nothing else to clean up. If a link *has* been
+shared, leave the counter in place: deleting it turns a live link into one that
+credits nobody.
+
+Adding a sixth person is: append them to `STAFF_ROSTER` in
+`app/lib/staffReferrals.ts` and re-run with `--apply`. Everyone already
+provisioned is untouched.
 
 ---
 
@@ -129,6 +382,24 @@ node scripts/hubspot-backfill.js
 #    workflow can run. Then trigger it once by hand from the Actions tab.
 ```
 
+**After adding properties to `app/lib/hubspotSchema.ts`** — which the referral
+and marketing-consent work did — re-run the same two steps against the live
+portal once the change is deployed:
+
+```bash
+node scripts/hubspot-setup.js --dry-run   # should list only the NEW properties
+node scripts/hubspot-setup.js             # creates what's missing, skips the rest
+node scripts/hubspot-backfill.js --dry-run --force
+node scripts/hubspot-backfill.js --force  # re-push so existing contacts get them
+```
+
+`--force` is what makes the backfill revisit applications already stamped
+`hubspotSyncedAt`; without it they are skipped and the new properties stay blank
+on contacts that were synced before the properties existed. Both steps are
+idempotent — `hubspot-setup.js` creates only what is missing and never modifies a
+property that already exists, and a re-push never resets a decision a human made
+in the CRM (the mapping writes no status field at all).
+
 Both scripts refuse to run with a specific, actionable message when
 `HUBSPOT_ACCESS_TOKEN` (or, for the backfill, Firebase credentials) is missing.
 
@@ -147,7 +418,8 @@ Running it more often is safe. The response is a summary:
 
 ```json
 { "ok": true, "pushedApplications": 2, "pushedMembers": 5,
-  "approvals": 1, "declines": 0, "truncated": false, "errors": [] }
+  "approvals": 1, "declines": 0, "refreshedReferrals": 0,
+  "truncated": false, "errors": [] }
 ```
 
 `errors` holds per-record failures — one bad record never aborts the run, and
@@ -155,15 +427,20 @@ the endpoint still returns 200, because a malformed legacy document is a data
 problem for a human, not an outage. `errors[].ref` is a document id or a HubSpot
 contact id, never an email.
 
-**What it returns today**, with `CRON_SECRET` set on Vercel and no
-`HUBSPOT_ACCESS_TOKEN` yet — a 200, so nothing a monitor watches reads it as an
-outage, and an explicit reason so nobody mistakes it for a working sync:
+`refreshedReferrals` counts contacts whose referral number actually moved this
+pass. **Zero is the normal, healthy reading** — see
+[Keeping `ha_referral_confirmed` fresh](#keeping-ha_referral_confirmed-fresh-cheaply).
+
+**Without `HUBSPOT_ACCESS_TOKEN`** (a supported state — any preview deployment,
+and how this ran before the token existed) the same endpoint answers 200 with an
+explicit reason, so a monitor doesn't read it as an outage and nobody mistakes
+it for a working sync:
 
 ```
 HTTP/1.1 200 OK
 content-type: application/json
 
-{"ok":true,"pushedApplications":0,"pushedMembers":0,"approvals":0,"declines":0,"truncated":false,"errors":[],"skipped":"hubspot-not-configured"}
+{"ok":true,"pushedApplications":0,"pushedMembers":0,"approvals":0,"declines":0,"refreshedReferrals":0,"truncated":false,"errors":[],"skipped":"hubspot-not-configured"}
 ```
 
 The two failure shapes worth recognising: `503 {"error":"cron-not-configured"}`
@@ -196,8 +473,9 @@ Things worth knowing:
 
 - **`In review` and `Waitlisted` do nothing.** They are there so staff have
   somewhere to park a decision without it reading as a rejection.
-- **Don't edit `Member Status`, `Decision Synced`, `Platform Activated` or
-  `Sync Note`.** They are mirrors of platform truth; the sync overwrites them.
+- **Don't edit `Member Status`, `Decision Synced`, `Platform Activated`,
+  `Sync Note`, `Referral Source` or `Referrals Confirmed`.** They are mirrors of
+  platform truth; the sync overwrites them.
 - **To re-run a decision**, set **Decision Synced → Pending** and save. The next
   sync will apply the current status again.
 - **A non-empty `Sync Note` means something needed a human.** The common case is
@@ -214,9 +492,9 @@ Things worth knowing:
 > anything in `app/`, neither is deployed, and `HUBSPOT_BASE_URL` must never be
 > set on the Vercel project.
 
-There is no portal token yet, which would otherwise leave the whole integration
-unverified against anything real. So there is a stand-in for the API and a
-single command that drives the sync end to end against it.
+These predate the portal token and are still the right tool: they exercise the
+whole sync end to end without spending a real API call or writing to a live
+contact record. Use them before pointing anything at the portal.
 
 ### `scripts/hubspot-mock-server.js`
 
@@ -306,7 +584,13 @@ contact** · cleanup is complete.
 | `app/lib/hubspotSchema.ts` | **The single source of truth** for every `ha_` property: name, label, type, options. Nothing else hardcodes a property name. |
 | `app/lib/hubspot.ts` | HubSpot v3 client. `fetch` only, no SDK. Timeout, one retry on 429/5xx, errors that never carry the token or a PII-bearing body. Every request is built from `hubspotBaseUrl()` — the one place `api.hubapi.com` appears. |
 | `app/lib/hubspotMapping.ts` | Pure Firestore → property-bag mapping. No I/O, so it is unit-tested directly. Truncation happens here and nowhere else. |
-| `app/lib/hubspotSync.ts` | `pushApplication`, `pushApprovedMember`, `pullDecisions`, `reconcile`. |
+| `app/lib/hubspotSync.ts` | `pushApplication`, `pushApprovedMember`, `pullDecisions`, `refreshReferralCounts`, `reconcile`. |
+| `app/lib/referral.ts` | Referral vocabulary shared by the browser, the write path and the rules tests. Also defines the staff-counter shape (`STAFF_COUNTER_KIND`, `staffCounterFields`). Not a HubSpot file. |
+| `app/lib/marketingConsent.ts` | The consent field names, the checkbox copy and the granted/declined shape, in one pure module so the form, the write path, the mapping and the rules tests cannot drift. |
+| `app/lib/staffReferrals.ts` | Staff roster + the pure provisioning decisions (`planStaffCode`, `validateRoster`). No I/O. |
+| `app/lib/staffReferralsServer.ts` | Admin-SDK half of provisioning: `planMember`, `mintStaffCode`, `provisionStaffCodes`. |
+| `scripts/staff-referrals.js` | Provision the staff lead-source codes. Dry run by default, `--apply`, `--json`. |
+| `tests/staffReferrals.test.mts` | Roster validation, conflict refusal, and idempotent provisioning against the emulator. |
 | `app/lib/hubspotEmail.ts` | Optional approval email. Off unless `HUBSPOT_APPROVAL_EMAIL=on`. |
 | `app/lib/hubspotClient.ts` | The browser's one fire-and-forget ping. |
 | `app/api/hubspot/application/route.ts` | Public post-submit ping. Always 200. |
@@ -318,7 +602,10 @@ contact** · cleanup is complete.
 | `scripts/hubspot-e2e.js` | **Local only.** One-command end-to-end verification against the mock + real Firestore. |
 | `tests/hubspot.test.mts` | Mapping, legacy-document, name-splitter and decline-guardrail tests. The HTTP layer is mocked; no test touches the real API. |
 
-`npm run test:hubspot` runs the suite (it is also part of `npm test`).
+`npm run test:hubspot` runs the CRM suite and `npm run test:staff` the staff-code
+suite; both are part of `npm test`. The referral counters, the staff counters and
+the optional application fields are enforced by `firestore.rules` and covered by
+`npm run test:referral`.
 
 ### Why the pull is not a webhook
 
@@ -355,7 +642,9 @@ the integration out:
 4. Remove `test:hubspot` from `package.json` (and from the `test` script), and
    the `/api/cron/hubspot-sync` entry from `vercel.json`.
 5. In `app/components/ApplyModal.tsx`: drop the `notifyHubspotApplication`
-   import and its one call site.
+   import and its one call site. **Leave the marketing-consent checkbox** — it
+   writes to Firestore, not to HubSpot, and the referral loop is likewise
+   Firestore-native. Neither depends on this integration.
 6. Optional: `docId` on `ApplicationRecord` in `app/lib/firebase.ts` exists only
    to feed that call. Harmless to keep.
 7. Unset `HUBSPOT_ACCESS_TOKEN` and `HUBSPOT_APPROVAL_EMAIL` in Vercel, and the
@@ -364,8 +653,14 @@ the integration out:
 No Firestore security rules change is needed to add or remove this. Everything
 server-side runs through the Admin SDK, which bypasses rules; the new fields it
 writes onto `applications/{id}` (`hubspotContactId`, `hubspotSyncedAt`,
-`status`, `decidedAt`, `declineReason`, `decidedVia`) live in a collection that
-is already **create-only and never client-readable**, and no client writes them.
+`hubspotReferralConfirmed`, `status`, `decidedAt`, `declineReason`, `decidedVia`)
+live in a collection that is already **create-only and never client-readable**,
+and no client writes them.
+
+The rules changes that shipped alongside this work are **not** HubSpot's and
+stay when it goes: the optional marketing-consent validation on `applications`
+create, the `staffReferralCodes` deny-all block, and the staff-counter notes on
+the `referrals` block.
 
 ### Relationship to the temporary access gate
 

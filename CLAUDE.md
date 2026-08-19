@@ -212,6 +212,20 @@ signup**, one read to resolve an incoming `?ref=`, one read to render the share 
   `applications` doc instead, so who referred whom is never a readable graph.
 - **Positions are per-operator arithmetic, so two people can show the same number** once
   referrals land. That is the deliberate trade for O(1) writes.
+- **Staff lead-source codes share the same collection.** Five team members have a
+  `referrals/{code}` counter with `kind: "staff"` and `basePos: 1` — the fixed
+  point of the position arithmetic, so their position never drifts and the shared
+  rules need no branch. Clients can't forge one (the create rule takes an exact
+  field list without `kind`); only `scripts/staff-referrals.js` (Admin SDK) mints
+  them, keyed for idempotency by the deny-all `staffReferralCodes/{slug}`. They
+  get a link, never an account. See `app/lib/staffReferrals.ts` and
+  [`docs/hubspot-integration.md`](docs/hubspot-integration.md) → Staff referral codes.
+- **The application carries an optional, unchecked marketing opt-in**
+  (`app/lib/marketingConsent.ts`): `marketingConsent` always, plus
+  `marketingConsentAt`/`marketingConsentSource` only when granted. It gates
+  nothing and **nothing sends off it** — no list, sender, subscription or
+  campaign is configured anywhere. Absent ≠ `false`: legacy applications were
+  never asked.
 - **Three implementations of the position model must agree**: `app/lib/referral.ts`,
   the `referralPos()`/`referralCounted()` helpers in [`firestore.rules`](firestore.rules)
   (rules have no `min`/`max`, so they spell it out in ternaries), and the mirror in
@@ -253,7 +267,9 @@ signup**, one read to resolve an incoming `?ref=`, one read to render the share 
   live `watch*` subscriptions), `gamify.ts` (XP/levels/streaks/entitlements), `milestones.ts`
   (the track), `match.ts` (cohort matching), `referral.ts` (waitlist referral constants +
   position arithmetic, shared by the browser, the write path and the rules tests),
-  `flags.ts` (`PLATFORM_ENABLED` build-time flag).
+  `flags.ts` (`PLATFORM_ENABLED` build-time flag), `marketingConsent.ts` (the
+  optional opt-in vocabulary), `staffReferrals.ts` + `staffReferralsServer.ts`
+  (staff lead-source codes: roster/decisions, then the Admin-SDK provisioning).
   Plus the deletable gate trio: `accessGate.ts` (server: allowlist lookup + rate limit),
   `accessEmail.ts` (server: sign-in-link mail), `accessClient.ts` (browser: fetch wrappers).
 - `proxy.ts` (repo root) — Next 16 `proxy` (the renamed `middleware`). When `PLATFORM_ENABLED`
@@ -310,15 +326,17 @@ node scripts/seed.js                        # seed squads, profiles, workshops, 
 node scripts/admin-set.js <uid> mentor      # promote a mentor directly (also: consent | pro)
 node scripts/mentor-invite.js "<label>" 30  # mint a single-use mentor invite link (days opt.)
 node scripts/approve.js <email> mentor      # founding-batch allowlist (also: operator | --remove)
+node scripts/staff-referrals.js             # staff lead-source codes: DRY RUN (add --apply, --json)
 node scripts/cleanup-test.js <cohortId>     # remove smoke-test artifacts
 
 # Tests (wrap the Firestore emulator; pinned firebase-tools@13 devDep):
-npm test              # rules + referral + consent + mentor-invite + hubspot suites
+npm test              # rules + referral + consent + mentor-invite + hubspot + staff-code suites
 npm run test:rules    # firestore.rules enforcement (tests/rules.test.mjs)
 npm run test:referral # waitlist referral counters, rules + model (tests/referral.test.mts)
 npm run test:consent  # server consent-token logic (tests/consent.test.mts)
 npm run test:mentor   # server mentor-invite logic (tests/mentorInvite.test.mts)
 npm run test:hubspot  # CRM sync logic (tests/hubspot.test.mts)
+npm run test:staff    # staff lead-source code provisioning (tests/staffReferrals.test.mts)
 ```
 
 Beyond those suites, `scripts/` are manual smoke-test + seed/admin helpers.

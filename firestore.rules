@@ -19,6 +19,11 @@ service cloud.firestore {
     //   queue position and how many people they've brought in. Readable by
     //   anyone (a ?ref= link has to resolve for a signed-out visitor); writes
     //   are shape-bounded rather than identity-bounded. See the block below.
+    //   Also holds the STAFF lead-source codes (kind: 'staff'), which are
+    //   Admin-SDK-only to create and otherwise behave identically.
+    //
+    // Collection: staffReferralCodes/{slug} — server-only mapping from a staff
+    //   member to their lead-source code. Deny-all to clients.
     //
     // Collection: profiles/{uid} — the operator profile. Readable by any
     //   signed-in user (it IS the cohort application artifact). Privacy
@@ -164,7 +169,39 @@ service cloud.firestore {
                          request.resource.data.referralCode.matches('^[ABCDEFGHJKMNPQRSTVWXYZ23456789]{6}$')) &&
                        (!('referredBy' in request.resource.data) ||
                          request.resource.data.referredBy == '' ||
-                         request.resource.data.referredBy.matches('^[ABCDEFGHJKMNPQRSTVWXYZ23456789]{6}$'));
+                         request.resource.data.referredBy.matches('^[ABCDEFGHJKMNPQRSTVWXYZ23456789]{6}$')) &&
+                       // Optional marketing consent. The whole block is
+                       // optional so every application already on record still
+                       // validates — but an opt-in is a CONSENT RECORD, and a
+                       // consent record without its proof is worthless. The
+                       // three clauses below are one invariant:
+                       //
+                       //   marketingConsent == true
+                       //     <=> marketingConsentAt == request.time
+                       //      &  marketingConsentSource == 'waitlist'
+                       //
+                       // 1. If present at all, it must be a real boolean.
+                       (!('marketingConsent' in request.resource.data) ||
+                         request.resource.data.marketingConsent is bool) &&
+                       // 2. An opt-in MUST carry both proofs. The timestamp is
+                       //    compared to request.time — the value a
+                       //    serverTimestamp() sentinel resolves to — so a
+                       //    client cannot backdate its own consent, and the
+                       //    source must be exactly the one this form writes.
+                       //    ('waitlist' is spelled out because rules cannot
+                       //    import; MARKETING_CONSENT_SOURCE in
+                       //    app/lib/marketingConsent.ts is the same string and
+                       //    tests/referral.test.mts pins the two together.)
+                       (request.resource.data.get('marketingConsent', false) != true ||
+                         (request.resource.data.get('marketingConsentAt', null) == request.time &&
+                          request.resource.data.get('marketingConsentSource', '') == 'waitlist')) &&
+                       // 3. And proof without an opt-in is equally malformed —
+                       //    it would read in the CRM as evidence of a consent
+                       //    nobody gave.
+                       (!('marketingConsentAt' in request.resource.data) ||
+                         request.resource.data.get('marketingConsent', false) == true) &&
+                       (!('marketingConsentSource' in request.resource.data) ||
+                         request.resource.data.get('marketingConsent', false) == true);
       allow read, update, delete: if false;
     }
 
@@ -201,6 +238,20 @@ service cloud.firestore {
     // and must recompute pos exactly. Identity fields are frozen after create.
     // A determined caller can still replay the +1 — that is the same
     // client-trusted v1 posture as the queue counter, not an oversight.
+    //
+    // STAFF LEAD-SOURCE CODES live in this same collection and are minted ONLY
+    // by the Admin SDK (scripts/staff-referrals.js), which bypasses these
+    // rules. Two properties make that safe rather than a hole:
+    //   • The create rule below accepts an EXACT field list that does not
+    //     include `kind`, so no client can mint a document claiming to be a
+    //     staff code — the marker is unforgeable from a browser.
+    //   • The update rule only ever touches confirmed/credited/pos/updatedAt,
+    //     so a client can credit a staff code (which is the whole point) but
+    //     cannot strip or rewrite the marker, and cannot delete the counter.
+    // A staff counter carries basePos == 1, the fixed point of the position
+    // arithmetic below: referralPos(1, credited) == 1 for every credited, so
+    // the shared update rule leaves its position alone without needing a branch
+    // for it. See STAFF_COUNTER_KIND in app/lib/referral.ts.
 
     function referralCounted(credited) {
       // min(credited, REFERRAL_MAX) — rules have no min().
@@ -731,6 +782,20 @@ service cloud.firestore {
     // ===============================================================
 
     match /mentorInvites/{codeHash} {
+      allow read, write: if false;
+    }
+
+    // ===============================================================
+    // Staff referral codes — server-only, same posture as mentorInvites.
+    // The private half of the staff lead-source codes: slug → code, plus the
+    // person's name and Slack id. Written by scripts/staff-referrals.js
+    // (Admin SDK, bypasses rules) and read by nothing else. Its only job is
+    // idempotency, so nothing in the product ever needs it at request time.
+    // The PUBLIC half — referrals/{code} — carries neither a name nor a Slack
+    // id precisely so this document can stay closed. See app/lib/staffReferrals.ts.
+    // ===============================================================
+
+    match /staffReferralCodes/{slug} {
       allow read, write: if false;
     }
 
