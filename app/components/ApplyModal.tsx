@@ -6,6 +6,10 @@ import {
   type ApplicationRecord,
 } from "../lib/firebase";
 import { notifyHubspotApplication } from "../lib/hubspotClient";
+import {
+  MARKETING_CONSENT_HINT,
+  MARKETING_CONSENT_LABEL,
+} from "../lib/marketingConsent";
 import ReferralShare from "./ReferralShare";
 
 const STORAGE_KEY = "ha_application";
@@ -138,6 +142,9 @@ export default function ApplyModal({
   const [impact, setImpact] = useState("");
   const [problem, setProblem] = useState("");
   const [plan, setPlan] = useState("");
+  // Marketing opt-in. Starts UNCHECKED and stays optional — nothing on this
+  // form is gated on it, and nothing sends off it today.
+  const [marketingConsent, setMarketingConsent] = useState(false);
   const [err, setErr] = useState("");
   const [submitErr, setSubmitErr] = useState("");
   const [busy, setBusy] = useState(false);
@@ -166,6 +173,7 @@ export default function ApplyModal({
         setImpact(saved.impact ?? "");
         setProblem(saved.problem ?? "");
         setPlan(saved.plan ?? "");
+        setMarketingConsent(saved.marketingConsent === true);
         setStep(5);
       } else {
         setStep(1);
@@ -259,6 +267,7 @@ export default function ApplyModal({
       impact: impact.trim(),
       problem: problem.trim(),
       plan: plan.trim(),
+      marketingConsent,
     };
     try {
       const record = await submitApplication(input, referredBy);
@@ -301,6 +310,7 @@ export default function ApplyModal({
     impact,
     problem,
     plan,
+    marketingConsent,
     referredBy,
     onApplied,
   ]);
@@ -483,6 +493,25 @@ export default function ApplyModal({
               value={plan}
               onChange={setPlan}
             />
+            {/* Optional, unchecked, and deliberately below the last question:
+                it is a separate decision from applying, not a step in it. */}
+            <label className="optin" htmlFor="m-updates">
+              <input
+                type="checkbox"
+                id="m-updates"
+                checked={marketingConsent}
+                onChange={(e) => setMarketingConsent(e.target.checked)}
+              />
+              <span className="optin__box" aria-hidden="true">
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3.4">
+                  <path d="M5 12l5 5L19 7" />
+                </svg>
+              </span>
+              <span className="optin__text">
+                {MARKETING_CONSENT_LABEL}
+                <span className="optin__hint">{MARKETING_CONSENT_HINT}</span>
+              </span>
+            </label>
             <div className={`modal__err${err ? " show" : ""}`}>{err}</div>
             {submitErr && <div className="modal__err show">{submitErr}</div>}
             <div className="modal__actions">

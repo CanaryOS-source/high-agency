@@ -44,6 +44,18 @@ export const P = {
   firestoreAppId: "ha_firestore_app_id",
   platformActivated: "ha_platform_activated",
   syncNote: "ha_sync_note",
+  // Referral attribution. ANALYTICS ONLY — referral resolution and crediting
+  // are Firestore-native (app/lib/referral.ts) and never consult HubSpot.
+  referralCode: "ha_referral_code",
+  referredBy: "ha_referred_by",
+  referralSource: "ha_referral_source",
+  referralConfirmed: "ha_referral_confirmed",
+  // Optional marketing consent. Plain custom properties, deliberately NOT
+  // HubSpot subscription state: nothing can send off a custom property, so
+  // recording an intention here cannot become a send by accident.
+  marketingConsent: "ha_marketing_consent",
+  marketingConsentAt: "ha_marketing_consent_at",
+  marketingConsentSource: "ha_marketing_consent_source",
 } as const;
 
 /** Standard HubSpot properties we also write. */
@@ -90,6 +102,22 @@ export const DECISION_SYNCED = {
 } as const;
 
 export const YES_NO = { yes: "yes", no: "no" } as const;
+
+/**
+ * Where an applicant came from, derived from the counter their `?ref=` code
+ * resolved to.
+ *
+ * `staff` is the one that earns its keep: it separates "a teammate's post
+ * brought this person in" from "another applicant did", which is the whole
+ * point of the staff promo codes. `ha_referred_by` says WHICH code; this says
+ * what KIND, so a staff-vs-organic split is one filter rather than a list of
+ * five codes somebody has to keep up to date.
+ */
+export const REFERRAL_SOURCE = {
+  direct: "direct",
+  applicant: "applicant",
+  staff: "staff",
+} as const;
 
 /* ------------------------------------------------------------------ */
 /* Value length ceilings                                               */
@@ -299,6 +327,78 @@ export const HA_PROPERTIES: HubSpotPropertyDef[] = [
       "Yes once this person has actually signed in and created a platform " +
       "profile. Use it to find approved members who never showed up.",
     options: [option(YES_NO.yes, "Yes"), option(YES_NO.no, "No")],
+  },
+  {
+    name: P.referralCode,
+    label: "Referral Code",
+    type: "string",
+    fieldType: "text",
+    description:
+      "This applicant's own share code — the link they can send to other " +
+      "people. Filter contacts by Referred By Code = this to see who they " +
+      "brought in.",
+  },
+  {
+    name: P.referredBy,
+    label: "Referred By Code",
+    type: "string",
+    fieldType: "text",
+    description:
+      "The referral code this applicant arrived on. Empty means they came in " +
+      "cold. This is how a staff promo code is attributed: filter on the code " +
+      "to get everyone that link brought in.",
+  },
+  {
+    name: P.referralSource,
+    label: "Referral Source",
+    type: "enumeration",
+    fieldType: "select",
+    description:
+      "What kind of link brought them in: a team member's promo code, another " +
+      "applicant's share link, or neither. Derived by the sync — editing it " +
+      "here has no effect.",
+    options: [
+      option(REFERRAL_SOURCE.direct, "Direct"),
+      option(REFERRAL_SOURCE.applicant, "Applicant referral"),
+      option(REFERRAL_SOURCE.staff, "Staff promo code"),
+    ],
+  },
+  {
+    name: P.referralConfirmed,
+    label: "Referrals Confirmed",
+    type: "number",
+    fieldType: "number",
+    description:
+      "How many applications this applicant's own code has brought in. Kept " +
+      "current by the sync, and only rewritten when the number actually " +
+      "changes.",
+  },
+  {
+    name: P.marketingConsent,
+    label: "Marketing Consent",
+    type: "enumeration",
+    fieldType: "select",
+    description:
+      "Did they tick the optional updates box on the application? Blank means " +
+      "they applied before the box existed — which is NOT a yes. This is a " +
+      "record of intent, not a HubSpot subscription: nothing sends off it.",
+    options: [option(YES_NO.yes, "Yes"), option(YES_NO.no, "No")],
+  },
+  {
+    name: P.marketingConsentAt,
+    label: "Marketing Consent At",
+    type: "date",
+    fieldType: "date",
+    description: "Date the marketing opt-in was given. Only set when it was.",
+  },
+  {
+    name: P.marketingConsentSource,
+    label: "Marketing Consent Source",
+    type: "string",
+    fieldType: "text",
+    description:
+      "Where the opt-in was collected, e.g. \"waitlist\". Only set when consent " +
+      "was given.",
   },
   {
     name: P.syncNote,

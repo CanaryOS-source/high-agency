@@ -18,9 +18,15 @@ import {
   MEMBER_ROLE,
   MEMBER_STATUS,
   P,
+  REFERRAL_SOURCE,
   STD,
   YES_NO,
 } from "./hubspotSchema";
+import {
+  MARKETING_CONSENT_SOURCE,
+  marketingConsentState,
+} from "./marketingConsent";
+import { STAFF_COUNTER_KIND, normalizeReferralCode } from "./referral";
 
 /* ------------------------------------------------------------------ */
 /* Source shapes                                                       */
@@ -45,6 +51,33 @@ export interface ApplicationDoc {
   opId?: unknown;
   queuePos?: unknown;
   createdAt?: unknown;
+  /** This applicant's own share code. Absent on every application that
+   *  predates referrals, and on the referral-free fallback write. */
+  referralCode?: unknown;
+  /** The code they arrived on; "" when they came in cold. */
+  referredBy?: unknown;
+  /** Optional marketing opt-in. Absent means never asked — see
+   *  marketingConsentState, which keeps that distinct from an explicit no, and
+   *  from a `true` whose proof does not hold up. */
+  marketingConsent?: unknown;
+  marketingConsentAt?: unknown;
+  marketingConsentSource?: unknown;
+}
+
+/**
+ * The two facts about a referral that the application document does NOT carry,
+ * resolved by the sync engine from the public counters and handed in here.
+ *
+ * They live outside ApplicationDoc because they are not application data — they
+ * are the answer to two Firestore reads. Keeping them as an argument is what
+ * lets this file stay a pure function of its inputs.
+ */
+export interface ReferralFacts {
+  /** A REFERRAL_SOURCE value. Omitted when it could not be resolved, which is
+   *  not the same as `direct` and must not be written as one. */
+  source?: string;
+  /** Confirmed referrals on this applicant's OWN counter. */
+  confirmed?: number;
 }
 
 export interface ApprovedMemberDoc {
@@ -163,7 +196,10 @@ export function hubspotEmail(value: unknown): string | undefined {
  * human already made, is the sync engine's call, and re-pushing an application
  * must never reset it.
  */
-export function applicationToProperties(app: ApplicationDoc): PropertyBag {
+export function applicationToProperties(
+  app: ApplicationDoc,
+  referral: ReferralFacts = {}
+): PropertyBag {
   const bag: PropertyBag = {};
 
   put(bag, STD.email, hubspotEmail(app.email));
@@ -186,7 +222,68 @@ export function applicationToProperties(app: ApplicationDoc): PropertyBag {
   put(bag, P.appliedAt, toDateProperty(app.createdAt));
   put(bag, P.firestoreAppId, text(app.id, MAX_SINGLE_LINE));
 
+  // Referral attribution. Codes go through the same normalizer the browser and
+  // the write path use, so a hand-edited document can never put junk in a field
+  // staff will filter on. An empty referredBy ("came in cold") is a legitimate
+  // value and is written as an empty string, not omitted — "no referrer" is a
+  // fact, whereas an absent field means the application predates referrals.
+  put(bag, P.referralCode, normalizeReferralCode(app.referralCode) || undefined);
+  if (typeof app.referredBy === "string") {
+    bag[P.referredBy] = normalizeReferralCode(app.referredBy);
+  }
+  if (referral.source) bag[P.referralSource] = referral.source;
+  if (typeof referral.confirmed === "number" && Number.isFinite(referral.confirmed)) {
+    bag[P.referralConfirmed] = String(Math.max(0, Math.round(referral.confirmed)));
+  }
+
+  // Marketing consent, FAIL CLOSED. `Yes` is only ever written for a record
+  // that carries the whole proof — the boolean, a resolvable timestamp and the
+  // exact source this form writes. Anything short of that maps to nothing at
+  // all rather than to a `Yes` a person never gave; see marketingConsentState.
+  //
+  // Absent also stays absent: an application from before the box existed must
+  // not acquire a "no" it never gave, because "no" and "never asked" are
+  // different things to anyone segmenting off this later.
+  const consentedOn = toDateProperty(app.marketingConsentAt);
+  const consent = marketingConsentState(
+    app.marketingConsent,
+    app.marketingConsentSource,
+    consentedOn
+  );
+  if (consent === "granted") {
+    bag[P.marketingConsent] = YES_NO.yes;
+    bag[P.marketingConsentAt] = consentedOn as string;
+    bag[P.marketingConsentSource] = MARKETING_CONSENT_SOURCE;
+  } else if (consent === "declined") {
+    bag[P.marketingConsent] = YES_NO.no;
+  }
+
   return bag;
+}
+
+/**
+ * Which REFERRAL_SOURCE an incoming code represents, given the counter that
+ * code actually resolved to.
+ *
+ * A `null` counter is why this takes the document rather than just its `kind`:
+ * a well-formed code that points at nothing (mistyped, or from a counter that
+ * was deleted) is exactly the case the write path declines to credit, so it is
+ * reported as `direct` rather than inventing a referrer who does not exist.
+ */
+export function referralSourceFor(
+  referredBy: unknown,
+  counter: { kind?: unknown } | null | undefined
+): string {
+  if (!normalizeReferralCode(referredBy)) return REFERRAL_SOURCE.direct;
+  if (!counter) return REFERRAL_SOURCE.direct;
+  if (counter.kind === STAFF_COUNTER_KIND) return REFERRAL_SOURCE.staff;
+  return REFERRAL_SOURCE.applicant;
+}
+
+/** The one property the periodic referral-count refresh writes. Separate from
+ *  applicationToProperties so a refresh can never touch anything else. */
+export function referralCountProperties(confirmed: number): PropertyBag {
+  return { [P.referralConfirmed]: String(Math.max(0, Math.round(confirmed))) };
 }
 
 /**

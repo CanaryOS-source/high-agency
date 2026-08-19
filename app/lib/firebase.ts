@@ -12,11 +12,13 @@ import { getAuth, GoogleAuthProvider, type Auth } from "firebase/auth";
 import {
   REFERRALS_COLLECTION,
   REFERRAL_MAX,
+  STAFF_COUNTER_KIND,
   effectivePos,
   newReferralCode,
   normalizeReferralCode,
   type ReferralCounter,
 } from "./referral";
+import { marketingConsentFields } from "./marketingConsent";
 
 // Applicants notionally ahead of #1, so early queue numbers don't read
 // "#1, #2" while the founding batch fills. Set to 0 for a true raw count.
@@ -76,6 +78,10 @@ export interface ApplicationInput {
   impact: string;
   problem: string;
   plan: string;
+  /** Optional marketing opt-in. Always present on a fresh submission (false
+   *  when the box was left unchecked); absent on records restored from a
+   *  localStorage receipt written before the checkbox shipped. */
+  marketingConsent?: boolean;
 }
 
 export interface ApplicationRecord extends ApplicationInput {
@@ -163,6 +169,9 @@ async function writeApplication(
       // Attribution lives here, on the private doc, not on the public counter
       // — a readable referral graph is not worth the exposure.
       ...(code ? { referralCode: code, referredBy } : {}),
+      // Optional marketing opt-in. Nothing sends off this field today; it is
+      // recorded so a future campaign can tell "said yes" from "never asked".
+      ...marketingConsentFields(input.marketingConsent === true, serverTimestamp()),
       createdAt: serverTimestamp(),
       source: "waitlist",
     });
@@ -295,6 +304,8 @@ export async function fetchReferralCounter(
       // Trust the stored position, but fall back to the arithmetic if a doc
       // predates the field or was written by hand.
       pos: typeof d.pos === "number" ? d.pos : effectivePos(basePos, credited),
+      // Absent on every applicant counter; only the Admin SDK can set it.
+      ...(d.kind === STAFF_COUNTER_KIND ? { kind: STAFF_COUNTER_KIND } : {}),
     };
   } catch {
     return null;

@@ -18,6 +18,7 @@ import { fetchReferralCounter } from "./lib/firebase";
 import {
   REFERRAL_JUMP,
   REFERRAL_PARAM,
+  isStaffCounter,
   normalizeReferralCode,
 } from "./lib/referral";
 
@@ -37,8 +38,17 @@ const REFERRAL_KEY = "ha_ref";
  * has clicked around the page, and the query string is scrubbed from the URL
  * so nobody re-shares a link that credits someone else.
  */
-function useReferralCode(): string {
-  const [code, setCode] = useState("");
+interface IncomingReferral {
+  /** "" until a code has actually resolved against a counter document. */
+  code: string;
+  /** True for a staff lead-source code — see STAFF_COUNTER_KIND in ./lib/referral.
+   *  A staff code brings people in but has no queue position of its own, so the
+   *  banner must not promise their "referrer" a jump that cannot happen. */
+  staff: boolean;
+}
+
+function useReferralCode(): IncomingReferral {
+  const [ref, setRef] = useState<IncomingReferral>({ code: "", staff: false });
 
   useEffect(() => {
     let live = true;
@@ -71,7 +81,7 @@ function useReferralCode(): string {
       try {
         sessionStorage.setItem(REFERRAL_KEY, incoming);
       } catch {}
-      setCode(incoming);
+      setRef({ code: incoming, staff: isStaffCounter(counter) });
     });
 
     return () => {
@@ -79,18 +89,22 @@ function useReferralCode(): string {
     };
   }, []);
 
-  return code;
+  return ref;
 }
 
 /** The "you were invited" line. Renders nothing until a code has resolved. */
-function ReferralBanner({ code }: { code: string }) {
+function ReferralBanner({ code, staff }: IncomingReferral) {
   if (!code) return null;
   return (
     <Reveal className="invited" d={1}>
       <span className="invited__mark" aria-hidden="true" />
       <span>
-        <b>You were invited.</b> Apply and your referrer moves up{" "}
-        {REFERRAL_JUMP} places.
+        <b>You were invited.</b>{" "}
+        {staff
+          ? // A staff code has no queue position, so there is nothing to promise
+            // on their behalf. Say the true thing instead of the generic one.
+            "Someone on the High Agency team sent you this link."
+          : `Apply and your referrer moves up ${REFERRAL_JUMP} places.`}
       </span>
     </Reveal>
   );
@@ -137,7 +151,7 @@ export default function Waitlist() {
   const [modalOpen, setModalOpen] = useState(false);
   const [prefillEmail, setPrefillEmail] = useState("");
   const [applied, setApplied] = useState(false);
-  const referredBy = useReferralCode();
+  const incoming = useReferralCode();
 
   useEffect(() => {
     try {
@@ -212,7 +226,7 @@ export default function Waitlist() {
               <Reveal className="capture__note" d={3}>
                 <span><b>By application</b> · Free · Ages 13–19</span>
               </Reveal>
-              <ReferralBanner code={referredBy} />
+              <ReferralBanner {...incoming} />
             </div>
           </div>
         </section>
@@ -547,7 +561,7 @@ export default function Waitlist() {
       <ApplyModal
         open={modalOpen}
         prefillEmail={prefillEmail}
-        referredBy={referredBy}
+        referredBy={incoming.code}
         onClose={() => setModalOpen(false)}
         onApplied={() => setApplied(true)}
       />

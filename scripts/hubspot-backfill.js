@@ -50,9 +50,12 @@ async function main() {
   const { applicationToProperties, approvedMemberToProperties } = loadTsModule(
     "app/lib/hubspotMapping.ts"
   );
-  const { APPLICATIONS, pushApplication, pushApprovedMember } = loadTsModule(
-    "app/lib/hubspotSync.ts"
-  );
+  const {
+    APPLICATIONS,
+    pushApplication,
+    pushApprovedMember,
+    resolveReferralFacts,
+  } = loadTsModule("app/lib/hubspotSync.ts");
   const { APPROVED_MEMBERS } = loadTsModule("app/lib/accessGate.ts");
 
   const db = adminDb();
@@ -74,7 +77,11 @@ async function main() {
 
   for (const doc of appDocs) {
     const data = doc.data();
-    const props = applicationToProperties({ ...data, id: doc.id });
+    // Referral attribution costs at most two counter reads and is resolved the
+    // same way on a dry run as on a real one, so the printout is what would
+    // actually be written rather than a subset of it.
+    const app = { ...data, id: doc.id };
+    const props = applicationToProperties(app, await resolveReferralFacts(app, db));
     console.log(`\n  ${doc.id}  ${maskEmail(data.email)}`);
     printPairs(
       Object.entries(props).map(([k, v]) => [
