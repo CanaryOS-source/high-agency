@@ -434,7 +434,7 @@ export default function Waitlist() {
             <Reveal className="mentor__photo">
               <img
                 className="mentor__img"
-                src="/images/joshua_newall.jpg"
+                src="/images/joshua-newall-2026.jpg"
                 alt="Joshua Newall, Founder and Lead Mentor at High Agency"
               />
               <div className="mentor__badge">
