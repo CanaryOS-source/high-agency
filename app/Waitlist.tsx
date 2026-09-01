@@ -367,7 +367,7 @@ export default function Waitlist() {
                   <div className="path__body">
                     <div className="path__top">
                       <span className="path__name">Mission locked</span>
-                      <span className="xp">+100</span>
+                      <span className="path__count">week 1</span>
                     </div>
                   </div>
                 </div>
@@ -376,7 +376,7 @@ export default function Waitlist() {
                   <div className="path__body">
                     <div className="path__top">
                       <span className="path__name">20 cold asks out</span>
-                      <span className="xp">+150</span>
+                      <span className="path__count">week 2</span>
                     </div>
                   </div>
                 </div>
@@ -386,8 +386,7 @@ export default function Waitlist() {
                     <div className="path__top">
                       <span className="path__name">MVP live</span>
                       <div className="path__meta">
-                        <span className="xp">+250</span>
-                        <span className="badge badge--level">you are here</span>
+                        <span className="badge badge--earned">you are here</span>
                       </div>
                     </div>
                   </div>
@@ -414,9 +413,6 @@ export default function Waitlist() {
               <div style={{ display: "flex", gap: 8, marginTop: 14, flexWrap: "wrap" }}>
                 <span className="hud__stat hud__stat--fire">
                   <FlameIcon size={14} /> 12
-                </span>
-                <span className="hud__stat hud__stat--xp">
-                  <ZapIcon size={13} /> 480
                 </span>
                 <span className="badge badge--earned">
                   <CheckIcon size={11} /> verified by a human
@@ -552,6 +548,8 @@ export default function Waitlist() {
               >
                 Apply
               </a>
+              <a href="/privacy">Privacy</a>
+              <a href="/terms">Terms</a>
             </div>
             <small>© 2026 High Agency · A launchpad.</small>
           </div>

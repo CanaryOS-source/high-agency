@@ -15,9 +15,9 @@ Operators join a tight squad, progress a track of real-world milestones (ship an
 land first users, reach first revenue), attend live expert workshops, and keep momentum
 through streaks and accountability between sessions.
 
-The product thesis: **progress is earned by doing real things and verified by a human, not
-by completing solo theory exercises.** Gamification rewards verified real-world output, not
-logins or lurking.
+The product thesis: **progress is earned by doing real things, and a human — the squad's
+mentor — decides what progress is.** The only game mechanic is the streak; there is no XP,
+no levels, and nothing is gated by points. Logins and lurking earn nothing.
 
 **Canonical product spec:** [`prd.md`](prd.md) (PRD v1.0, 2026-06-06). When code and PRD
 disagree, that's a flag to raise — except where this file explicitly records a decision or
@@ -88,19 +88,16 @@ This is a standing constraint. The freemium model (free core + paid mentorship t
 
 - **DO NOT** add Stripe, checkout, billing, subscriptions, dunning, refunds, paywall UI,
   or pricing pages. There is no payment integration and none should appear during the MVP.
-- **DO** preserve the *entitlement scaffolding* that already exists so the line can be
-  switched on later without re-architecture:
-  - `Profile.plan: "free" | "pro"` — wired, but everyone is `free` in batch 1.
-  - `BATCH1_ALL_FREE = true` in [`app/lib/gamify.ts`](app/lib/gamify.ts) — keep it `true`.
-    `canEnroll()` already gates "Pro" workshops but short-circuits to free while this flag
-    is on. New gated features should tag free-vs-paid the same way and stay free in batch 1.
+- **DO** preserve the one piece of *entitlement scaffolding* that exists:
+  `Profile.plan: "free" | "pro"` is on every profile (and in the rules) but **nothing reads
+  it**. When pricing lands, gate on it; until then leave it dormant.
 - **Everything ships free** for the founding batch. The point of batch 1 is to validate the
   engagement loop and harvest proof (testimonials, shipped outcomes), *then* turn on pricing.
 - Tagging a feature as eventually-paid is fine and encouraged (keeps the line movable);
   *implementing the wall* is out of scope.
 
-Access in the MVP is gated by **earned Operator Level**, not by payment ("access you earn,
-not buy"). Don't conflate level gates with paywalls.
+Nothing in the MVP is gated by anything but role and squad membership. The XP/level ladder
+that used to gate workshops was removed in September 2026 — don't reintroduce a points gate.
 
 ## Stack & architecture
 
@@ -115,23 +112,36 @@ not buy"). Don't conflate level gates with paywalls.
   has been fully retired from the config — if you see `canary-os` anywhere, it's stale.)
 - **No separate backend service. No Python/Flask. No Vertex AI service.** The PRD's old
   Python assumption is dropped (and `prd.md` is updated to match).
-- **Firestore security rules *are* the backend.** All v1 data access goes through the
-  Firebase client SDK directly from the browser; [`firestore.rules`](firestore.rules) is
-  the substantial, authoritative enforcement layer (validation, ownership, immutability,
-  bounded XP writes). Treat the rules as production-critical code — when you change a data
-  shape or a write path, update the rules in the same change.
-- **Direction of travel:** sensitive / must-not-be-client-trusted logic (entitlement
-  decisions, milestone-verification XP payouts, attendance, streak integrity) should
-  **migrate into Next.js server actions / route handlers** over time rather than staying
-  client-trusted. Several v1 mechanics are explicitly "client-trusted v1" (see Gotchas) and
-  are the natural first candidates to move server-side.
+- **Firestore security rules *are* the backend** for squad data. Squads, applications, build
+  logs, check-in requests, the ritual and the mentor's track are written by the browser
+  through the client SDK, and [`firestore.rules`](firestore.rules) is the authoritative
+  enforcement layer (validation, ownership, immutability). Treat the rules as
+  production-critical code — when you change a data shape or a write path, update the rules
+  in the same change.
+- **Workshops and check-in confirmations are server-authoritative.** Every workshop write
+  (authoring, enrolling, leaving) and every check-in confirmation goes through a Route
+  Handler under `app/api/**` using `firebase-admin`, because each may also touch the host
+  mentor's **Google Calendar**. Clients only read `workshops/*`; the rules deny all client
+  writes there. Server logic lives in `app/lib/workshopServer.ts`, `checkinServer.ts`,
+  `googleCalendar.ts`, `serverAuth.ts`; the browser reaches it via `app/lib/api.ts`.
+- **Google Calendar (per mentor).** A mentor connects their own Google account once
+  (`/mentor/you` or the home-screen prompt → `/api/google/connect` → Google →
+  `/api/google/callback`). The refresh token is stored AES-256-GCM encrypted in
+  `googleTokens/{uid}` (deny-all to clients). From then on every session they schedule and
+  every check-in they confirm gets a Calendar event with a **Meet room**; enrolled operators
+  are invited as guests with the guest list hidden (`guestsCanSeeOtherGuests: false`), so
+  they get reminders and the mentor sees who's coming, but operators never see each other's
+  emails. Unconnected mentors paste a link instead — nothing breaks without Google.
+  Env: `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `GOOGLE_TOKEN_KEY` (32 bytes hex).
+- **Direction of travel:** the remaining client-trusted mechanic is the streak (see
+  Gotchas); it's the natural next thing to move server-side.
 - **Mentors get their own app, not the operator app plus an admin tab.** There is no `/admin`
   route. `role == "mentor"` swaps the entire shell: the rail becomes **Home · Workshops ·
-  Squads · You** (`app/(platform)/mentor/**`), the XP/streak HUD is hidden, and every operator
+  Squads · You** (`app/(platform)/mentor/**`), the streak HUD is hidden, and every operator
   surface (`/dashboard`, `/learn`, `/cohorts`, `/profile`) redirects a mentor to its mentor
   equivalent. The one genuinely shared screen is `/cohorts/[id]` — that's where a mentor
-  verifies milestones 4–7 — and it hides the operator-only affordances (XP labels, build-log
-  composer, ritual button) from them. Mentor screens read their queues through
+  writes and advances the squad's track — and it hides the operator-only affordances
+  (build-log composer, ritual button) from them. Mentor screens read their queues through
   `app/components/mentorData.ts`, so Home and Squads can't disagree about what's outstanding.
   **Break-glass / bootstrap operations still run as local Node scripts** (`scripts/`) — they
   authenticate with the firebase-tools CLI OAuth token (IAM bypasses security rules), which is
@@ -166,26 +176,34 @@ Types live in [`app/lib/types.ts`](app/lib/types.ts); data access in
 - **Cohort / "squad"** (`cohorts/{id}`) — an accountability squad of **3–8** operators
   (`COHORT_MIN_TO_ACTIVATE = 3`, `COHORT_MAX_MEMBERS = 8`). States: `forming → active →
   stalled → archived`. A founder commits a weekly **ritual** slot (deliberate friction).
-  Members share one track and a weekly ritual streak. Subcollections: `applications/`,
-  `submissions/`, `logs/`.
-- **Milestone track** — the default 8-week **Ignition Track** (7 milestones) in
-  [`app/lib/milestones.ts`](app/lib/milestones.ts), from "Mission Locked" to "Demo Day".
-  Evidence specs are deliberately brutal-specific to keep verification cheap. Milestones
-  **1–3 are verified by the cohort's peer-lead; 4–7 by a mentor.** Custom tracks are batch-2.
-- **MilestoneSubmission** (`submissions/{milestoneId}_{uid}`) — **per-operator** evidence
-  (doc id enforces one-per-operator-per-milestone; resubmits overwrite). Status
-  `submitted → returned | verified`. **Returned ≠ rejected** — it comes back with a specific,
-  non-punitive reason and a resubmit path, and never breaks a streak.
+  Members share one mentor, one track and a weekly ritual streak. Subcollections:
+  `applications/`, `logs/`, `checkIns/`. (The old `peerLeadUid` field is tolerated on legacy
+  docs and read by nothing.)
+- **Track** (`cohorts/{id}.track: TrackMilestone[]`) — **written by the squad's mentor,
+  from scratch, per squad.** An ordered list of up to 20 steps, each `{ id, title, detail,
+  dueDay, doneAt }`. The mentor is the sole authority on progress: they mark a step done
+  **for the whole squad** (`doneAt`), and the squad reads it. There is no operator
+  submission, no evidence spec, no peer verification. Templates in
+  [`app/lib/trackTemplates.ts`](app/lib/trackTemplates.ts) ("Ignition", "Launch sprint")
+  are starting points a mentor can edit freely. Rules: only `isCohortMentor` may write
+  `track`/`trackUpdatedAt`, and nothing else in the same write.
 - **BuildLog** (`logs/`) — daily one-line "what I shipped" updates; described in code as
   "the sleeper feature." The cheapest qualifying action that keeps a streak alive.
-- **Workshop** (`workshops/`, staff-seeded, read-only to clients) — live Google-Meet
-  sessions / office hours. The one `open` workshop per season is free to all; others are
-  level-gated (and, post-MVP, plan-gated). v1 uses Google Meet links, not in-app video.
-- **Gamification** (`app/lib/gamify.ts`): **XP** (≈70% of achievable XP flows through
-  verified real-world milestones), **5 Operator Levels** (Cadet → Builder → Operator →
-  Closer → Architect) that unlock access/status, and **streaks** with banked freezes (earn
-  1 per 7-day run, max 3; a freeze covers exactly one missed day). A "day" is the user's
-  **local** day; the weekly ritual cadence is the ISO week.
+- **Workshop** (`workshops/`) — a live Google-Meet session a mentor hosts on **any topic**.
+  Independent of tracks. Capped (`capacity` 2–200, default 15); the roster lives on the doc
+  (`enrolledUids`), mirrored to `profile.enrolledWorkshops`. Written only by the server
+  (`app/api/workshops/**`), which creates/updates/cancels the Calendar event and keeps the
+  guest list equal to the roster. `calendarEventId` is present when linked. Operators can
+  enroll and **leave** until the session starts. No attendance tracking.
+- **Check-in** (`cohorts/{id}/checkIns/`) — a squad-scoped session with the squad's own
+  mentor: any member requests one, the mentor confirms it via `POST /api/checkins/confirm`,
+  which creates the Calendar event + Meet room with the whole squad invited (or takes a
+  pasted link when the mentor isn't connected). Readable by that squad and that mentor only.
+- **Streaks** (`app/lib/streaks.ts`) — the only game mechanic. A personal daily streak kept
+  alive by qualifying actions (posting a build log, marking the weekly ritual held)
+  with banked freezes (earn 1 per 7-day run, max 3; a freeze covers exactly one missed day),
+  and a squad `weeklyStreak` ticked once per ISO week when any member marks the ritual held.
+  A "day" is the user's **local** day. Client-trusted v1.
 - **Matching** ([`app/lib/match.ts`](app/lib/match.ts)) — tag overlap + timezone band +
   skills-wanted scoring with "why matched" chips. No embeddings yet (deliberate).
 
@@ -245,27 +263,36 @@ signup**, one read to resolve an incoming `?ref=`, one read to render the share 
   `/dashboard`, `/cohorts`, `/cohorts/[id]`, `/learn`, `/profile`. **Mentor routes:**
   `/mentor` (home queues), `/mentor/workshops` (month calendar of every session + authoring),
   `/mentor/squads` (verify queue, check-in requests, adoption feed, consent queue),
-  `/mentor/you` (mentor profile). Plus `/login` + `/login/verify` (the temporary
+  `/mentor/you` (mentor profile + Google Calendar connect). Plus `/login` + `/login/verify` (the temporary
   founding-batch access gate — see below), `/onboarding`, and `/mentor/join`
   (invite-only mentor signup, unlinked from nav).
 - `app/api/` — the server-authoritative Route Handlers (Node, `firebase-admin`, bypass rules):
   `consent/send` + `consent/approve` (parental consent; approval page at `/consent/[token]`),
   `mentor/peek` + `mentor/redeem` (mentor invites), `cron/unassigned-squads` (daily
-  ops sweep, `CRON_SECRET`-gated, scheduled in `vercel.json`), and `access/request` +
-  `access/claim` + `access/mentor-profile` (the temporary access gate). Server logic
-  lives in `app/lib/firebaseAdmin.ts`, `app/lib/consentServer.ts`,
-  `app/lib/mentorInviteServer.ts`, `app/lib/accessGate.ts`, `app/lib/accessEmail.ts` —
-  **never import these from client components.**
+  ops sweep, `CRON_SECRET`-gated, scheduled in `vercel.json`), `workshops` +
+  `workshops/[id]` + `workshops/[id]/enroll` (authoring, seats), `checkins/confirm`,
+  `google/{connect,callback,status,disconnect}` (per-mentor Calendar OAuth), and
+  `access/request` + `access/claim` + `access/mentor-profile` (the temporary access gate).
+  Server logic lives in `app/lib/firebaseAdmin.ts`, `serverAuth.ts`, `googleCalendar.ts`,
+  `workshopServer.ts`, `checkinServer.ts`, `consentServer.ts`, `mentorInviteServer.ts`,
+  `accessGate.ts`, `accessEmail.ts` — **never import these from client components.**
+  The browser-side wrappers are in `app/lib/api.ts`.
 - `app/styleguide/page.tsx` — the living design-system reference (top-level route, `noindex`).
+- `app/privacy/page.tsx` + `app/terms/page.tsx` — public legal pages, linked from the waitlist
+  footer. `/privacy` is the URL on the Google OAuth consent screen (Google requires one for
+  the Calendar scope), so keep it live and keep the Google Calendar section accurate.
 - `app/components/AuthProvider.tsx` — client auth context (`useAuth()` → `{ user, profile,
   logout }`); `user`/`profile` are `undefined` while resolving, `null` when absent.
 - `app/components/mentorData.ts` — the mentor app's guard + queues (`useMentorGate`,
-  `useMentoredSquads`, `useUnassignedSquads`, `useConsentQueue`). Every mentor screen reads
+  `useMentoredSquads` — check-in requests, upcoming check-ins, squads with no track —
+  `useUnassignedSquads`, `useConsentQueue`). `app/components/Track.tsx` holds the track
+  editor (mentor) and read-only view (squad); `CalendarConnect.tsx` the Google connect card. Every mentor screen reads
   its counts from here; the queues are bounded on purpose (see `CONSENT_QUEUE_LIMIT` and
   `UNASSIGNED_SCAN_LIMIT` in `db.ts`) and the UI says so when a list is truncated.
 - `app/lib/` — `types.ts`, `firebase.ts` (config + waitlist), `db.ts` (all Firestore CRUD +
-  live `watch*` subscriptions), `gamify.ts` (XP/levels/streaks/entitlements), `milestones.ts`
-  (the track), `match.ts` (cohort matching), `referral.ts` (waitlist referral constants +
+  live `watch*` subscriptions; workshops are read-only here), `api.ts` (fetch wrappers for
+  the server routes), `streaks.ts` (local day / ISO week / the streak), `trackTemplates.ts`
+  (starting points for a mentor's track), `match.ts` (cohort matching), `referral.ts` (waitlist referral constants +
   position arithmetic, shared by the browser, the write path and the rules tests),
   `flags.ts` (`PLATFORM_ENABLED` build-time flag), `marketingConsent.ts` (the
   optional opt-in vocabulary), `staffReferrals.ts` + `staffReferralsServer.ts`
@@ -288,13 +315,11 @@ signup**, one read to resolve an incoming `?ref=`, one read to render the share 
 
 ## Open product questions (record, don't silently resolve)
 
-- **Track model — UNRESOLVED.** `prd.md` describes **one shared track per cohort, mentor-
-  verified once per cohort.** The code implements a **per-operator "squad model"**: each
-  operator builds their *own* venture and submits *own* evidence per milestone; peer-lead
-  verifies 1–3, mentor verifies 4–7; a cohort "completes" a milestone when ~75% of the squad
-  is verified (`squadThreshold` in `milestones.ts`). **Neither is locked.** Do not assume one
-  over the other or quietly "fix" the code to match the PRD — surface the divergence and let
-  the team decide. If a decision gets made, update `prd.md`, this file, and the code together.
+- **Track model — RESOLVED (2026-09-01).** One track per squad, authored and advanced by
+  the squad's mentor; progress is per squad, not per operator. `prd.md` carries a revision
+  note; the per-operator submission model and the peer-lead role are gone.
+- **Attendance is not tracked.** Workshops have seats and calendar invites, nothing else.
+  If attendance ever matters again, it should come from Calendar/Meet data, not self-report.
 
 ## Conventions
 
@@ -359,15 +384,21 @@ Beyond those suites, `scripts/` are manual smoke-test + seed/admin helpers.
 - **The `app/api/**` routes need Firebase Admin credentials in their runtime env.** Locally,
   Application Default Credentials or the emulator suffice; on Vercel, set
   `FIREBASE_SERVICE_ACCOUNT` (or `FIREBASE_CLIENT_EMAIL` + `FIREBASE_PRIVATE_KEY`) or every
-  server-authoritative flow — parental consent **and** mentor-invite redemption — 500s. Same
-  secret serves both.
+  server-authoritative flow — parental consent, mentor-invite redemption, workshops,
+  check-in confirmation, Calendar connect — 500s. Same secret serves all of them.
 - **Firebase web config keys are public by design** (committed in `app/lib/firebase.ts`);
   security comes from Firestore rules, not from hiding keys. Don't "fix" this by removing
   them. They're overridable via `NEXT_PUBLIC_FIREBASE_*` env vars.
-- **Several mechanics are "client-trusted v1"** — streak updates, self-reported workshop
-  attendance, and verifier XP payouts are written from the client (rules bound XP writes but
-  trust the client otherwise). These are intentional shortcuts for the founding batch and the
-  prime candidates to move into server actions/route handlers. Don't treat them as airtight.
+- **The streak is "client-trusted v1"** — `touchStreak` and the ritual tick are written
+  from the browser and the rules only shape-check them. Intentional shortcut for the
+  founding batch; don't treat it as airtight.
+- **Google Calendar needs three env vars** (`GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`,
+  `GOOGLE_TOKEN_KEY`) in the server runtime. Without them `/api/google/status` reports
+  `configured: false`, the connect card explains itself, and sessions fall back to a pasted
+  Meet link. Never rotate `GOOGLE_TOKEN_KEY` casually: it decrypts every stored token.
+- **Legacy XP-era fields** (`xp`, `attendedWorkshops`, `lastRitualWeek` on profiles;
+  `peerLeadUid`, `submissions/` on cohorts; `open`/`levelGate`/`milestoneId`/`kind` on
+  workshops) are tolerated by the rules and ignored by the app. Nothing writes them.
 - **`applications`** (waitlist) is a create-only, never-readable collection (applicant PII);
   the only public readables are the `meta/waitlist` counter and the `referrals/{code}`
   counters. Don't add read paths to `applications` — referral attribution lives on the

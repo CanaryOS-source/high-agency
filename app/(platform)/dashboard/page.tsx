@@ -4,28 +4,21 @@ import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { useAuth } from "../../components/AuthProvider";
-import {
-  watchMyCohorts,
-  watchSubmissions,
-  watchBuildLogs,
-  addBuildLog,
-  getUpcomingWorkshops,
-  enrollWorkshop,
-  markAttended,
-} from "../../lib/db";
-import { localDay } from "../../lib/gamify";
-import { TRACK } from "../../lib/milestones";
-import type { Cohort, MilestoneSubmission, BuildLog, Workshop } from "../../lib/types";
+import { watchMyCohorts, watchBuildLogs, addBuildLog, getUpcomingWorkshops } from "../../lib/db";
+import { enrollWorkshop, leaveWorkshop } from "../../lib/api";
+import { localDay } from "../../lib/streaks";
+import { currentMilestone } from "../../lib/types";
+import type { Cohort, BuildLog, Workshop } from "../../lib/types";
 import { Avatar, AvStack, Bar, CheckIcon, FlameIcon, LockIcon } from "../../components/ui";
 import { WeekCal } from "../../components/WeekCal";
 import { ConsentResend } from "../../components/ConsentResend";
+import { trackProgress } from "../../components/Track";
 
 export default function HomePage() {
   const { user, profile } = useAuth();
   const router = useRouter();
 
   const [myCohorts, setMyCohorts] = useState<Cohort[] | null>(null);
-  const [subs, setSubs] = useState<MilestoneSubmission[]>([]);
   const [logs, setLogs] = useState<BuildLog[]>([]);
   const [workshops, setWorkshops] = useState<Workshop[]>([]);
   const [logText, setLogText] = useState("");
@@ -34,8 +27,8 @@ export default function HomePage() {
   useEffect(() => {
     if (user === null) router.replace("/login");
     else if (user && profile === null) router.replace("/onboarding");
-    // The operator app is the game — the track, the streak, the build log.
-    // None of it is a mentor's job, so they never land here.
+    // The operator app is the streak, the squad, the build log. None of it
+    // is a mentor's job, so they never land here.
     else if (profile?.role === "mentor") router.replace("/mentor");
   }, [user, profile, router]);
 
@@ -48,16 +41,10 @@ export default function HomePage() {
 
   useEffect(() => {
     if (!cohort) {
-      setSubs([]);
       setLogs([]);
       return;
     }
-    const u1 = watchSubmissions(cohort.id, setSubs);
-    const u2 = watchBuildLogs(cohort.id, setLogs);
-    return () => {
-      u1();
-      u2();
-    };
+    return watchBuildLogs(cohort.id, setLogs);
   }, [cohort?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
@@ -65,16 +52,26 @@ export default function HomePage() {
     getUpcomingWorkshops().then(setWorkshops).catch(() => {});
   }, [user]);
 
-  /** Claim a seat and reflect it locally — same reason as the Learn page: the
-   *  week's sessions are fetched once, not watched. */
+  /** Claim a seat and reflect it locally — the week's sessions are fetched
+   *  once, not watched. */
   async function enroll(w: Workshop) {
     if (!profile) return;
-    const result = await enrollWorkshop(profile.uid, w.id).catch(() => "full" as const);
+    const result = await enrollWorkshop(w.id).catch(() => "full" as const);
     if (result === "full") return;
     setWorkshops((prev) =>
       prev.map((x) =>
+        x.id === w.id ? { ...x, enrolledUids: [...(x.enrolledUids ?? []), profile.uid] } : x
+      )
+    );
+  }
+
+  async function leave(w: Workshop) {
+    if (!profile) return;
+    await leaveWorkshop(w.id).catch(() => {});
+    setWorkshops((prev) =>
+      prev.map((x) =>
         x.id === w.id
-          ? { ...x, enrolledUids: [...(x.enrolledUids ?? []), profile.uid] }
+          ? { ...x, enrolledUids: (x.enrolledUids ?? []).filter((u) => u !== profile.uid) }
           : x
       )
     );
@@ -93,18 +90,11 @@ export default function HomePage() {
 
   if (!user || !profile) return null;
 
-  const myVerified = subs.filter(
-    (s) => s.uid === profile.uid && s.status === "verified"
-  ).length;
-  const myCurrent = TRACK.find(
-    (m) =>
-      !subs.some(
-        (s) => s.uid === profile.uid && s.milestoneId === m.id && s.status === "verified"
-      )
-  );
   const loggedToday = profile.lastBuildLogDay === localDay();
   const consentPending = profile.consentStatus === "pending";
   const first = profile.name.split(" ")[0];
+  const now = cohort ? currentMilestone(cohort.track) : null;
+  const progress = cohort ? trackProgress(cohort.track) : { done: 0, total: 0 };
 
   return (
     <div className="screen">
@@ -140,7 +130,7 @@ export default function HomePage() {
                     </>
                   )}
                 </h2>
-                {!loggedToday && <span className="xp">+10</span>}
+                {!loggedToday && <span className="micro">keeps the streak</span>}
               </div>
               <div className="composer">
                 <input
@@ -175,21 +165,29 @@ export default function HomePage() {
               )}
             </section>
 
-            {/* ---- Next milestone ---- */}
+            {/* ---- Where the squad is on its track ---- */}
             <Link href={`/cohorts/${cohort.id}`} className="tile tile--tap">
               <div className="tile__head">
-                <h2 className="h3">Next up</h2>
-                {myCurrent && <span className="xp">+{myCurrent.xp}</span>}
+                <h2 className="h3">Now</h2>
+                {progress.total > 0 && (
+                  <span className="micro">
+                    {progress.done}/{progress.total}
+                  </span>
+                )}
               </div>
-              {myCurrent ? (
+              {progress.total === 0 ? (
+                <p className="empty" style={{ marginTop: 0 }}>
+                  {cohort.mentorUid
+                    ? `${cohort.mentorName} hasn't set the track yet.`
+                    : "The track arrives with your mentor."}
+                </p>
+              ) : now ? (
                 <div className="path" style={{ marginBottom: 12 }}>
                   <div className="path__item active" style={{ padding: 0 }}>
-                    <span className="path__node">{myCurrent.id}</span>
+                    <span className="path__node">{progress.done + 1}</span>
                     <div className="path__body">
-                      <span className="path__name">{myCurrent.name}</span>
-                      <div className="path__meta">
-                        <span className="path__count">{myCurrent.week}</span>
-                      </div>
+                      <span className="path__name">{now.title}</span>
+                      {now.detail && <p className="path__evidence" style={{ marginTop: 4 }}>{now.detail}</p>}
                     </div>
                   </div>
                 </div>
@@ -198,10 +196,7 @@ export default function HomePage() {
                   Track complete
                 </p>
               )}
-              <Bar value={myVerified / TRACK.length} />
-              <span className="micro" style={{ display: "block", marginTop: 8 }}>
-                {myVerified}/{TRACK.length} verified
-              </span>
+              {progress.total > 0 && <Bar value={progress.done / progress.total} />}
             </Link>
           </div>
 
@@ -229,12 +224,7 @@ export default function HomePage() {
                   All
                 </Link>
               </div>
-              <WeekCal
-                workshops={workshops}
-                profile={profile}
-                onEnroll={enroll}
-                onAttend={(w) => markAttended(profile, w).catch(() => {})}
-              />
+              <WeekCal workshops={workshops} profile={profile} onEnroll={enroll} onLeave={leave} />
             </section>
           </div>
         </div>
@@ -254,12 +244,7 @@ export default function HomePage() {
                   All
                 </Link>
               </div>
-              <WeekCal
-                workshops={workshops}
-                profile={profile}
-                onEnroll={enroll}
-                onAttend={(w) => markAttended(profile, w).catch(() => {})}
-              />
+              <WeekCal workshops={workshops} profile={profile} onEnroll={enroll} onLeave={leave} />
             </section>
           )}
         </div>

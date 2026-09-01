@@ -16,8 +16,7 @@ export type ConsentStatus = "none" | "pending" | "granted";
 export type Plan = "free" | "pro";
 
 /** mentor is staff-assigned — via a single-use invite link (`/mentor/join`,
- *  minted by scripts/mentor-invite.js) or the break-glass admin script.
- *  Peer-leads are per-cohort. */
+ *  minted by scripts/mentor-invite.js) or the break-glass admin script. */
 export type Role = "operator" | "mentor";
 
 /** What the mentor signup form submits to POST /api/mentor/redeem. The server
@@ -134,24 +133,22 @@ export interface Profile {
   /** When the parental-consent email was last dispatched (server-set, admin
    *  SDK). Gives mentors context in the consent queue; absent until sent. */
   consentEmailSentAt?: Timestamp;
-  /** Entitlement flag — wired now, everything is free during batch 1. */
+  /** Dormant monetization scaffold — everyone is "free"; nothing reads it. */
   plan: Plan;
   role: Role;
 
-  /* ---- gamification ---- */
-  xp: number;
+  /* ---- streak (the only game mechanic) ---- */
   streak: number;
   /** Banked streak freezes (earned 1 per 7-day streak, max 3). */
   streakFreezes: number;
   /** Last day (YYYY-MM-DD, user-local) that counted toward the streak. */
   lastActiveDay: string;
-  /** Caps: one build-log XP per day, one ritual XP per ISO week. */
+  /** Last local day a build log was posted — "shipped today" on the home screen. */
   lastBuildLogDay: string;
-  lastRitualWeek: string;
 
   /* ---- workshops ---- */
+  /** Mirror of workshops/{id}.enrolledUids for cheap per-user reads. */
   enrolledWorkshops: string[];
-  attendedWorkshops: string[];
 
   /** Cohort ids with a live pending application (hard cap 3). */
   pendingApplications: string[];
@@ -184,8 +181,8 @@ export const COHORT_MIN_TO_ACTIVATE = 3;
 export const COHORT_MAX_MEMBERS = 8;
 
 /** A squad goes live only when it has a real crew AND a mentor who owns it.
- *  Milestones 4–7 need a mentor to verify, so activating without one hands a
- *  squad a track it can't finish. Mirrored in firestore.rules. */
+ *  The mentor writes and advances the track, so activating without one hands
+ *  a squad a season nobody is running. Mirrored in firestore.rules. */
 export function canActivate(c: {
   memberUids: string[];
   mentorUid?: string | null;
@@ -209,18 +206,16 @@ export interface Cohort {
   state: CohortState;
   founderUid: string;
   founderName: string;
-  /** The mentor who adopted this squad from the /admin approval feed.
-   *  Absent until one does — and a squad can't leave `forming` without it
-   *  (see COHORT_MIN_TO_ACTIVATE + canActivate). Mentors verify milestones
-   *  4–7 and take the squad's check-in requests. */
+  /** The mentor who adopted this squad from the adoption feed. Absent until
+   *  one does — and a squad can't leave `forming` without it (see
+   *  COHORT_MIN_TO_ACTIVATE + canActivate). The mentor owns the squad's track
+   *  and takes its check-in requests. */
   mentorUid?: string;
   mentorName?: string;
   /** When ops was last emailed that this squad is still unassigned. Written
    *  only by the Admin SDK (the daily cron) so the same squad doesn't page
    *  info@high-agency.io every morning forever. */
   mentorNotifiedAt?: Timestamp;
-  /** Verifies milestones 1–3 for the squad (defaults to the founder). */
-  peerLeadUid: string;
   memberUids: string[];
   /** Denormalized display names so member lists render without N reads. */
   memberNames: Record<string, string>;
@@ -232,11 +227,45 @@ export interface Cohort {
    *  COHORT_ICON_MAX_CHARS) so squads get a picture without a Storage bucket —
    *  and, being inline, it loads nothing external onto a minor-facing page. */
   icon?: string;
-  /** Consecutive weeks the squad held its ritual + someone progressed. */
+  /** Consecutive weeks the squad marked its ritual held. */
   weeklyStreak: number;
   /** Last ISO week (YYYY-Www) that counted. */
   lastRitualWeek: string;
+  /** The squad's track — authored and advanced by its mentor alone. Absent
+   *  until the mentor sets one. See TrackMilestone. */
+  track?: TrackMilestone[];
+  trackUpdatedAt?: Timestamp;
   createdAt?: Timestamp;
+}
+
+/* ------------------------------------------------------------------ */
+/* The track (mentor-authored, per squad)                              */
+/* ------------------------------------------------------------------ */
+
+/** One step on a squad's track. The mentor writes the list, orders it, sets
+ *  optional due days, and marks steps done for the whole squad. There is no
+ *  operator-side submission: the mentor is the single source of truth for
+ *  progress, and the squad reads it. Stored inline on the cohort doc so the
+ *  whole track is one read and one write. */
+export interface TrackMilestone {
+  /** Stable within the squad; never reused. */
+  id: string;
+  title: string;
+  /** What "done" looks like — the mentor's words, not a spec. */
+  detail: string;
+  /** Optional target day, YYYY-MM-DD, or "". */
+  dueDay: string;
+  /** Epoch ms when the mentor marked it done for the squad; null = not yet. */
+  doneAt: number | null;
+}
+
+export const TRACK_MAX_MILESTONES = 20;
+export const TRACK_TITLE_MAX = 80;
+export const TRACK_DETAIL_MAX = 300;
+
+/** The first milestone not yet done — what the squad is on right now. */
+export function currentMilestone(track: TrackMilestone[] | undefined): TrackMilestone | null {
+  return (track ?? []).find((m) => !m.doneAt) ?? null;
 }
 
 /** Squad icon: center-cropped to a square this many px before it's encoded. */
@@ -284,32 +313,6 @@ export interface CohortApplication {
 }
 
 /* ------------------------------------------------------------------ */
-/* Milestone submissions (per-operator — the squad model)              */
-/* ------------------------------------------------------------------ */
-
-export type SubmissionStatus = "submitted" | "returned" | "verified";
-
-/** Doc id == `${milestoneId}_${uid}` so one submission per operator
- *  per milestone, and resubmits overwrite in place. */
-export interface MilestoneSubmission {
-  uid: string;
-  name: string;
-  /** 1–7, indexes into the default track (lib/milestones.ts). */
-  milestoneId: number;
-  /** Public link to the evidence (doc, screenshot album, live URL…). */
-  evidenceUrl: string;
-  /** What the verifier should look at (<=500 chars). */
-  note: string;
-  status: SubmissionStatus;
-  verifierUid: string | null;
-  verifierName: string | null;
-  /** Set when returned — specific, actionable, never punitive. */
-  returnReason: string | null;
-  createdAt?: Timestamp;
-  decidedAt?: Timestamp | null;
-}
-
-/* ------------------------------------------------------------------ */
 /* Build log (the sleeper feature)                                     */
 /* ------------------------------------------------------------------ */
 
@@ -331,34 +334,26 @@ export interface BuildLog {
 export interface Workshop {
   id: string;
   title: string;
-  /** Display name of the owning mentor. Auto-filled from the signed-in
-   *  mentor's profile at author time — never free text. */
+  /** Display name of the owning mentor, stamped server-side from their profile. */
   mentorName: string;
-  /** Owner. Stamped from auth on create, immutable after, and the only uid
-   *  the rules let edit or delete this session. Absent on legacy docs —
-   *  treat a missing owner as "nobody can edit it in-app". */
+  /** Owner. Stamped from auth on create, immutable after. */
   mentorUid?: string;
   description: string;
-  kind: "workshop" | "office_hours";
   startsAt: Timestamp;
   durationMins: number;
+  /** Where the room is. Comes from the Google Calendar event when the mentor
+   *  has connected their calendar; otherwise whatever they pasted. */
   meetLink: string;
-  /** Seat cap for kind "workshop" — required on every session authored now.
-   *  Absent on legacy docs, which read as uncapped (see workshopSpots).
-   *  Unlimited/webinar-style sessions are deliberately deferred (see prd.md). */
+  /** Seat cap — required on every session authored now. Absent on legacy
+   *  docs, which read as uncapped (see workshopSpots). */
   capacity?: number;
-  /** Who's in. Lives on the workshop doc so the cap is countable in one read
-   *  and enforceable in the rules; profiles.enrolledWorkshops is a mirror for
-   *  cheap per-user reads, not the source of truth. */
+  /** Who's in. Lives on the workshop doc so the cap is countable in one read;
+   *  profiles.enrolledWorkshops is a mirror for cheap per-user reads. */
   enrolledUids?: string[];
-  /** The one free "open workshop" per season — everyone can join. */
-  open: boolean;
-  /** Minimum operator level to enroll (0 = none). Level-gated, not paid-gated. */
-  levelGate: number;
-  /** Which default-track milestone this workshop teaches (0 = none). */
-  milestoneId: number;
-  /** Posted after the session; free after 30 days, immediate for Pro. */
+  /** Posted after the session. */
   recordingUrl: string;
+  /** Google Calendar event on the host mentor's calendar, when linked. */
+  calendarEventId?: string;
 }
 
 /** Allowed seat range for an authored workshop. Below 2 it isn't a workshop
@@ -407,6 +402,8 @@ export interface CheckIn {
   startsAt: Timestamp | null;
   durationMins: number;
   meetLink: string;
+  /** Google Calendar event on the mentor's calendar, when linked. */
+  calendarEventId?: string;
   createdAt?: Timestamp;
   confirmedAt?: Timestamp | null;
 }

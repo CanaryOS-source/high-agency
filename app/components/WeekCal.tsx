@@ -1,7 +1,7 @@
 "use client";
 
 import type { Profile, Workshop } from "../lib/types";
-import { SessionAction, SeatChip } from "./WorkshopList";
+import { SessionAction, SeatChip, isEnrolled } from "./WorkshopList";
 
 function sameDay(a: Date, b: Date): boolean {
   return (
@@ -18,12 +18,12 @@ export function WeekCal({
   workshops,
   profile,
   onEnroll,
-  onAttend,
+  onLeave,
 }: {
   workshops: Workshop[];
   profile: Profile;
   onEnroll?: (w: Workshop) => void;
-  onAttend?: (w: Workshop) => void;
+  onLeave?: (w: Workshop) => void;
 }) {
   const now = new Date();
   const days = Array.from(
@@ -54,9 +54,7 @@ export function WeekCal({
             ) : (
               <div className="wcal__evs">
                 {evs.map((w) => {
-                  const enrolled =
-                    (w.enrolledUids ?? []).includes(profile.uid) ||
-                    profile.enrolledWorkshops.includes(w.id);
+                  const enrolled = isEnrolled(w, profile);
                   return (
                     <div key={w.id} className={`wcal__ev ${enrolled ? "wcal__ev--in" : ""}`}>
                       <span className="wcal__time">
@@ -69,7 +67,7 @@ export function WeekCal({
                         {!enrolled && <SeatChip w={w} />}
                       </span>
                       <span className="wcal__act">
-                        <SessionAction w={w} profile={profile} onEnroll={onEnroll} onAttend={onAttend} />
+                        <SessionAction w={w} profile={profile} onEnroll={onEnroll} onLeave={onLeave} />
                       </span>
                     </div>
                   );

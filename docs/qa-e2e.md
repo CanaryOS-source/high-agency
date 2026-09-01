@@ -12,7 +12,7 @@ once. Written for Claude driving the Browser pane, but it is the same for a huma
 | Profile | `QA O.` · operator · 18+ · consent granted | `QA M.` · mentor |
 | Browser origin | `http://localhost:3000` | `http://127.0.0.1:3000` |
 
-**"QA Squad"** ties them together: the operator is founder + peer-lead, the mentor
+**"QA Squad"** ties them together: the operator is its founder, the mentor
 adopted it, and two seed profiles (`seed-dev`, `seed-lena`) pad it to three members so
 it is `active`. Its id is printed by the fixture script:
 
@@ -91,11 +91,17 @@ per email and per IP (in-process, so a dev-server restart clears it).
 
 ## What to check after a change
 
-- Operator: `/dashboard`, `/cohorts`, `/cohorts/<qa-squad-id>` (submit proof, build
-  log, ritual, ask for a check-in), `/learn`, `/profile`.
-- Mentor: `/mentor` (queues), `/mentor/squads` (verify queue, check-in requests,
-  "Needs a mentor" feed), `/mentor/workshops`, `/mentor/you`.
-- Cross-role loops need both tabs: operator submits → mentor verifies; operator asks
-  for a check-in → mentor sets a time. Role guards: operator on `/mentor` →
-  `/dashboard`; mentor on `/dashboard` → `/mentor`.
+- Operator: `/dashboard` (streak, "Now" from the track, build log, this week's
+  sessions), `/cohorts`, `/cohorts/<qa-squad-id>` (read-only track, build log, ritual,
+  ask for a check-in), `/learn` (enroll / leave), `/profile`.
+- Mentor: `/mentor` (queues + "New workshop" composer + calendar prompt),
+  `/mentor/squads` (check-in requests, "Needs a mentor" feed), `/mentor/workshops`
+  (week calendar, edit/delete own), `/mentor/you` (card + Google Calendar connect),
+  `/cohorts/<qa-squad-id>` (track editor: template, edit, reorder, mark done).
+- Cross-role loops need both tabs: mentor marks a step done → operator's track and
+  "Now" tile move; operator asks for a check-in → mentor sets a time → operator sees
+  it; mentor schedules a workshop → operator enrolls → mentor's seat count moves.
+  Role guards: operator on `/mentor` → `/dashboard`; mentor on `/dashboard` → `/mentor`.
+- Google Calendar is optional locally. Without `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET`
+  in `.env.local` the connect card says so and sessions take a pasted Meet link.
 - `npm test` for rules/model changes; the QA accounts do not replace it.

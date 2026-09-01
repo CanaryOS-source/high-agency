@@ -19,7 +19,7 @@ const map = (fields) => ({ mapValue: { fields } });
 // Admin REST API bypasses rules so we can create docs for non-auth UIDs.
 
 function profile({ uid, name, ageBand, country, timezone, headline, building,
-  stage, domains, skills, hours, xp, streak, daysAgo, proofUrl, proofNote, bio,
+  stage, domains, skills, hours, streak, daysAgo, proofUrl, proofNote, bio,
   links, consentStatus }) {
   const createdAt = new Date(Date.now() - (daysAgo ?? 0) * 86400000);
   // Seeded operators should look alive: a streak that ended weeks ago reads as
@@ -49,14 +49,11 @@ function profile({ uid, name, ageBand, country, timezone, headline, building,
       consentStatus: s(consentStatus ?? "granted"),
       plan: s("free"),
       role: s("operator"),
-      xp: n(xp ?? 0),
       streak: n(streak ?? 0),
       streakFreezes: n(0),
       lastActiveDay: s(today),
       lastBuildLogDay: s(""),
-      lastRitualWeek: s(""),
       enrolledWorkshops: arr([]),
-      attendedWorkshops: arr([]),
       pendingApplications: arr([]),
       updatedAt: ts(new Date()),
       createdAt: ts(createdAt),
@@ -75,7 +72,7 @@ const profiles = {
     headline: "Founder of Tempo — 340 student musicians practise with it weekly",
     building: "Tempo listens to a student play, finds the two bars they keep fumbling, and builds tomorrow's practice session around exactly those. Six school music departments use it; the band directors are the ones who ask for features now.",
     stage: "launched", domains: ["AI", "Web/Apps"], skills: ["Coding", "Design"],
-    hours: "10+", xp: 420, streak: 14, daysAgo: 21,
+    hours: "10+", streak: 14, daysAgo: 21,
     proofUrl: "https://github.com/mayac/tempo-pitch",
     proofNote: "The pitch-detection engine — I wrote it after three failed attempts with off-the-shelf libraries.",
     bio: "Played clarinet for eight years and hated practising badly. Built the thing I wanted at 14, rewrote it properly at 16.",
@@ -87,7 +84,7 @@ const profiles = {
     headline: "Ships Tempo's Android app — got audio latency under 40ms",
     building: "The mobile half of Tempo. Live pitch analysis has to feel instant or students stop trusting it, so most of my work is squeezing the audio pipeline. Android is 60% of our schools.",
     stage: "launched", domains: ["AI", "Web/Apps"], skills: ["Coding", "Ops"],
-    hours: "10+", xp: 310, streak: 8, daysAgo: 20,
+    hours: "10+", streak: 8, daysAgo: 20,
     proofUrl: "https://play.google.com/store/apps/details?id=study.tempo",
     proofNote: "Play Store listing — 1.4k installs, 4.6 stars.",
     bio: "Self-taught on a secondhand laptop. I care more about the 40ms than anyone should.",
@@ -99,7 +96,7 @@ const profiles = {
     headline: "Got Tempo into 6 school music departments by cold-emailing 200",
     building: "Distribution for Tempo. Music teachers don't read ads — they read emails from students who play. I write all 200 of them by hand and two schools a month say yes.",
     stage: "launched", domains: ["AI", "Content"], skills: ["Sales/Outreach", "Writing"],
-    hours: "5-10", xp: 180, streak: 5, daysAgo: 18,
+    hours: "5-10", streak: 5, daysAgo: 18,
     proofUrl: "https://tempo.study/schools",
     proofNote: "The page I send teachers — it converts at 11%.",
     bio: "Second violin, first in the inbox. I like the part of the job everyone else avoids.",
@@ -116,7 +113,7 @@ const profiles = {
     // (Cohort tags *do* take custom values; Northlight's squad is tagged
     // "Education".)
     stage: "revenue", domains: ["Other"], skills: ["Sales/Outreach", "Ops"],
-    hours: "10+", xp: 550, streak: 22, daysAgo: 14,
+    hours: "10+", streak: 22, daysAgo: 14,
     proofUrl: "https://northlight-tutoring.co.uk",
     proofNote: "Booking site — every tutor on it has been through my trial lesson.",
     bio: "Started charging £15/hr for maths help in year 11. Realised the bottleneck was never me teaching, it was other people teaching.",
@@ -128,7 +125,7 @@ const profiles = {
     headline: "Built Northlight's curriculum — tutors get a lesson plan, not a shrug",
     building: "The teaching side of Northlight. I write the session plans and worksheets every tutor uses, so a new tutor's first lesson is as good as their fiftieth. Nineteen plans so far, all from past-paper analysis.",
     stage: "revenue", domains: ["Content", "Other"], skills: ["Writing", "Design"],
-    hours: "3-5", xp: 280, streak: 10, daysAgo: 12,
+    hours: "3-5", streak: 10, daysAgo: 12,
     proofUrl: "https://northlight-tutoring.co.uk/mechanics-plan",
     proofNote: "One full session plan, free to read — this is the standard for all of them.",
     bio: "I get bored explaining the same thing twice, so I write it down properly once.",
@@ -141,7 +138,7 @@ const profiles = {
     headline: "Founder of Rivet — 120 keyboard kits designed, built and shipped",
     building: "Rivet makes small-batch mechanical keyboard kits. I design the PCB and case, run the group buy, and pack every box myself. Batch three sold out in nine days; batch four is 60 units and already half spoken for.",
     stage: "revenue", domains: ["Hardware", "E-commerce"], skills: ["Design", "Ops"],
-    hours: "10+", xp: 390, streak: 30, daysAgo: 10,
+    hours: "10+", streak: 30, daysAgo: 10,
     proofUrl: "https://rivetkb.com/batch-three",
     proofNote: "Batch three build log — every revision, including the one that failed.",
     bio: "My bedroom is a soldering station with a bed in it. Fair trade.",
@@ -153,7 +150,7 @@ const profiles = {
     headline: "Cut Rivet's per-unit cost 31% by re-sourcing the case supplier",
     building: "Supply and margins at Rivet. I found the Shenzhen anodiser who does our cases, negotiated batch pricing, and rebuilt the shipping flow so an order leaves within 48 hours. Boring work — it's what makes the thing a business.",
     stage: "revenue", domains: ["Hardware", "E-commerce"], skills: ["Ops", "Sales/Outreach"],
-    hours: "10+", xp: 270, streak: 9, daysAgo: 15,
+    hours: "10+", streak: 9, daysAgo: 15,
     proofUrl: "https://rivetkb.com/inside-the-numbers",
     proofNote: "We published our unit economics. Nobody in this space does that.",
     bio: "I like spreadsheets and I'm not sorry about it.",
@@ -166,7 +163,7 @@ const profiles = {
     headline: "Founder of Shelfware — 34 Shopify stores paying $19/mo",
     building: "Shelfware watches a small Shopify store's inventory and flags the stock that's quietly dying before it eats their cash. Most owners find out from their accountant six months late. $646 MRR, churn under 4%.",
     stage: "revenue", domains: ["E-commerce", "Web/Apps"], skills: ["Coding", "Sales/Outreach"],
-    hours: "10+", xp: 710, streak: 28, daysAgo: 30,
+    hours: "10+", streak: 28, daysAgo: 30,
     proofUrl: "https://apps.shopify.com/shelfware",
     proofNote: "Live on the Shopify App Store — 34 paying installs, 4.9 stars.",
     bio: "My mum runs a homeware shop. She lost 40k SEK on stock nobody wanted. That's the whole origin story.",
@@ -178,7 +175,7 @@ const profiles = {
     headline: "Sold Shelfware's first 20 customers by DMing store owners",
     building: "Growth at Shelfware, and my own thing — Ledgerly. At Shelfware I do the outbound: find stores with visible dead stock, screenshot the evidence, send it. Reply rate is 31% because the message is about them, not us.",
     stage: "revenue", domains: ["E-commerce", "Finance"], skills: ["Sales/Outreach", "Coding"],
-    hours: "10+", xp: 620, streak: 25, daysAgo: 6,
+    hours: "10+", streak: 25, daysAgo: 6,
     proofUrl: "https://ninak.dev/the-screenshot-cold-email",
     proofNote: "The exact template. It works because it costs me ten minutes of homework per send.",
     bio: "Started cold-emailing at 15 to get a summer job. Never stopped.",
@@ -190,7 +187,7 @@ const profiles = {
     headline: "Redesigned Shelfware's dashboard — support tickets dropped 60%",
     building: "Product design at Shelfware. Shop owners aren't analysts; the first version buried the one number that matters under four charts. Now it opens on a single sentence: 'These 12 items are costing you ¥— a month.'",
     stage: "revenue", domains: ["Web/Apps", "E-commerce"], skills: ["Design", "Coding"],
-    hours: "5-10", xp: 480, streak: 16, daysAgo: 20,
+    hours: "5-10", streak: 16, daysAgo: 20,
     proofUrl: "https://rin.design/shelfware-redesign",
     proofNote: "Before and after, with the support-ticket numbers attached.",
     bio: "I think most dashboards are cowardice — showing everything so you never have to decide what matters.",
@@ -204,7 +201,7 @@ const profiles = {
     headline: "Founder of Fieldnote — 11 conservation groups log data with it",
     building: "Fieldnote is an offline-first app for volunteers doing species counts where there's no signal. They were using paper and losing it. Eleven groups across three states, 4,200 observations recorded, and the state forest department has started asking for our exports.",
     stage: "launched", domains: ["Science", "Nonprofit"], skills: ["Coding", "Ops"],
-    hours: "5-10", xp: 340, streak: 11, daysAgo: 2,
+    hours: "5-10", streak: 11, daysAgo: 2,
     proofUrl: "https://fieldnote.ngo/wetland-count-2026",
     proofNote: "A full wetland bird count — 900 records collected on Fieldnote with zero signal.",
     bio: "Spent two monsoons volunteering on bird surveys, watched three notebooks get soaked. Built the fix.",
@@ -216,7 +213,7 @@ const profiles = {
     headline: "Built Fieldnote's sync engine — survives two weeks offline",
     building: "The hard part of Fieldnote: a phone that hasn't seen a tower in twelve days has to merge cleanly with everyone else's when it finally does. Conflict resolution, not features. Nobody notices it when it works.",
     stage: "launched", domains: ["Science", "Web/Apps"], skills: ["Coding", "Ops"],
-    hours: "10+", xp: 260, streak: 6, daysAgo: 3,
+    hours: "10+", streak: 6, daysAgo: 3,
     proofUrl: "https://github.com/omarh/fieldnote-sync",
     proofNote: "The sync layer, open-sourced, with the test suite that convinced me it was right.",
     bio: "I like problems where being clever is not enough and you just have to be careful.",
@@ -230,7 +227,7 @@ const profiles = {
     headline: "Founder of Curbside — 31 restaurants the big apps won't deliver for",
     building: "Curbside delivers for the independent restaurants in our county that DoorDash quotes 30% to. We charge 12%, run six student drivers on weekends, and did 214 orders last month. The owners text me directly when something breaks.",
     stage: "revenue", domains: ["Web/Apps", "E-commerce"], skills: ["Ops", "Sales/Outreach"],
-    hours: "10+", xp: 470, streak: 19, daysAgo: 5,
+    hours: "10+", streak: 19, daysAgo: 5,
     proofUrl: "https://curbside.delivery",
     proofNote: "The live order site — 31 restaurants, all signed in person.",
     bio: "My family's restaurant paid DoorDash more in fees than it paid me all summer.",
@@ -242,7 +239,7 @@ const profiles = {
     headline: "Founder of Bandwidth — 60 refurbished laptops placed with students",
     building: "Bandwidth takes dead corporate laptops, fixes them, and gets them to students who don't have one. Sixty machines placed across four schools. Two IT departments now call me before they send anything to recycling.",
     stage: "launched", domains: ["Hardware", "Nonprofit"], skills: ["Ops", "Sales/Outreach"],
-    hours: "5-10", xp: 200, streak: 7, daysAgo: 3,
+    hours: "5-10", streak: 7, daysAgo: 3,
     proofUrl: "https://bandwidth.sg/sixty",
     proofNote: "Every machine, where it came from, and where it went.",
     bio: "Shared one laptop with two siblings for three years. There are thousands of working machines going in skips.",
@@ -253,7 +250,7 @@ const profiles = {
     headline: "Runs Cutting Room — 4 retainer clients, 60 short-form edits a month",
     building: "Cutting Room is a two-person editing studio for creators who film plenty and post nothing. Four retainers at €400/month. I edit, Sofia writes the hooks. Our best client went from 2k to 40k followers in five months.",
     stage: "revenue", domains: ["Content"], skills: ["Video", "Sales/Outreach"],
-    hours: "10+", xp: 460, streak: 18, daysAgo: 8,
+    hours: "10+", streak: 18, daysAgo: 8,
     proofUrl: "https://cuttingroom.fr/reel",
     proofNote: "90-second reel — the four accounts and what they did before us.",
     bio: "Edited my first video at 12 for a friend's skate clip. Charged for the second one.",
@@ -267,7 +264,7 @@ const profiles = {
     headline: "Founder of Palate — menu + allergen translation for 22 restaurants",
     building: "Palate turns a photo of a handwritten menu into a clean, translated, allergen-tagged version customers can read. Built for immigrant-run kitchens that can't afford a designer or a translator. Twenty-two restaurants, free tier, working out what to charge.",
     stage: "launched", domains: ["AI", "Nonprofit"], skills: ["Coding", "Writing"],
-    hours: "5-10", xp: 240, streak: 12, daysAgo: 9,
+    hours: "5-10", streak: 12, daysAgo: 9,
     proofUrl: "https://palate.menu/before-after",
     proofNote: "Ten real menus, before and after. The Yoruba ones are the ones I'm proudest of.",
     bio: "My aunt's restaurant lost customers to a menu nobody could read. Now she has one they can.",
@@ -282,7 +279,7 @@ const profiles = {
 // seeded without a mentor stay "forming" on purpose: they're what the mentor
 // approval feed at /admin → Squads has to chew on.
 function cohort({ name, mission, tags, lookingFor, meetingSlot, timezone,
-  founderUid, founderName, members, daysAgo, state, mentorUid, mentorName }) {
+  founderUid, founderName, members, daysAgo, state, mentorUid, mentorName, track }) {
   const memberNames = {};
   const memberUids = [founderUid, ...members.map((m) => m.uid)];
   memberNames[founderUid] = s(founderName);
@@ -303,15 +300,28 @@ function cohort({ name, mission, tags, lookingFor, meetingSlot, timezone,
       ...(mentorUid
         ? { mentorUid: s(mentorUid), mentorName: s(mentorName ?? "Josh N.") }
         : {}),
-      peerLeadUid: s(founderUid),
       memberUids: arr(memberUids.map(s)),
       memberNames: map(memberNames),
       open: b(true),
       weeklyStreak: n(autoState === "active" ? Math.floor((daysAgo ?? 0) / 7) : 0),
       lastRitualWeek: s(""),
+      // The mentor-written track: a bounded list of {id,title,detail,dueDay,doneAt}.
+      ...(track ? { track: arr(track.map(trackStep)), trackUpdatedAt: ts(new Date()) } : {}),
       createdAt: ts(new Date(Date.now() - (daysAgo ?? 0) * 86400000)),
     },
   };
+}
+
+/** One track step as a Firestore map value. `done` = days ago it was marked. */
+function trackStep({ title, detail, dueInDays, done }, i) {
+  const due = dueInDays == null ? "" : new Date(Date.now() + dueInDays * 86400000).toISOString().slice(0, 10);
+  return map({
+    id: s(`step-${i + 1}`),
+    title: s(title),
+    detail: s(detail ?? ""),
+    dueDay: s(due),
+    doneAt: done == null ? { nullValue: null } : n(Date.now() - done * 86400000),
+  });
 }
 
 // A squad is the venture and the people building it — named like the company
@@ -321,6 +331,15 @@ function cohort({ name, mission, tags, lookingFor, meetingSlot, timezone,
 const cohorts = {
   "seed-tempo": cohort({
     name: "Tempo",
+    track: [
+      { title: "Mission locked", detail: "One-pager: the problem, who has it, why you, the season goal.", done: 20 },
+      { title: "20 asks out", detail: "Twenty cold messages to music teachers, one reply minimum.", done: 12 },
+      { title: "10 conversations", detail: "Interview log plus a half-page memo: pivot or persist.", done: 4 },
+      { title: "MVP live", detail: "The practice coach usable by a stranger at a public URL, plus a 60-second demo.", dueInDays: 9 },
+      { title: "First traction", detail: "Ten weekly-active students outside the founding school.", dueInDays: 23 },
+      { title: "One door opened", detail: "A music department that says yes in writing.", dueInDays: 37 },
+      { title: "Demo day", detail: "Three minutes, live, with the numbers.", dueInDays: 51 },
+    ],
     mission: "AI practice coach for student musicians — 340 weekly users across 6 school music departments.",
     tags: ["AI", "Web/Apps"],
     lookingFor: ["Marketing", "Design"],
@@ -478,13 +497,12 @@ const cohorts = {
 
 // ─── Workshops ─────────────────────────────────────────────────────────────
 
-// Sessions are owned and capped now. Seeded ones are stamped with a synthetic
+// Sessions are owned and capped. Seeded ones are stamped with a synthetic
 // owner uid so they're shaped like the real thing — no signed-in mentor owns
-// them, so they're read-only in /admin (only their author can edit a session).
-// Office hours are NOT seeded any more: they became squad-scoped check-ins
-// (cohorts/{id}/checkIns) and are no longer a catalog item at all.
+// them, so nobody can edit them in-app. They carry no calendar event (that
+// only exists when a real mentor with Google connected schedules a session).
 function workshop({ title, mentorName, mentorUid, description, inDays, hour,
-  durationMins, capacity, open, levelGate, milestoneId }) {
+  durationMins, capacity }) {
   const d = new Date();
   d.setDate(d.getDate() + inDays);
   d.setHours(hour, 0, 0, 0);
@@ -494,7 +512,6 @@ function workshop({ title, mentorName, mentorUid, description, inDays, hour,
       mentorName: s(mentorName),
       mentorUid: s(mentorUid ?? "seed-mentor"),
       description: s(description),
-      kind: s("workshop"),
       startsAt: ts(d),
       durationMins: n(durationMins),
       meetLink: s("https://meet.google.com/lookup/high-agency"),
@@ -502,9 +519,6 @@ function workshop({ title, mentorName, mentorUid, description, inDays, hour,
       // that can actually be a conversation, not a webinar.
       capacity: n(capacity ?? 15),
       enrolledUids: arr([]),
-      open: b(open ?? false),
-      levelGate: n(levelGate ?? 0),
-      milestoneId: n(milestoneId ?? 0),
       recordingUrl: s(""),
     },
   };
@@ -514,58 +528,50 @@ const workshops = {
   "seed-w0": workshop({
     title: "The Operator Mindset",
     mentorName: "Josh Newall",
-    description: "What high agency actually is, picking your mission, the weekly cadence. The season's open workshop — everyone in.",
+    description: "What high agency actually is, picking your mission, the weekly cadence. ",
     inDays: 3, hour: 18, durationMins: 60,
-    open: true, milestoneId: 1,
   }),
   "seed-w1": workshop({
     title: "The Art of the Cold Ask",
     mentorName: "Sarah Kim",
     description: "The 5-sentence cold email, rejection math, and the 3-touch follow-up.",
     inDays: 10, hour: 18, durationMins: 60,
-    milestoneId: 2,
   }),
   "seed-w2": workshop({
     title: "Talk to Humans",
     mentorName: "Josh Newall",
     description: "The Mom Test in 10 minutes; interviews that don't lie to you.",
     inDays: 17, hour: 18, durationMins: 60,
-    milestoneId: 3,
   }),
   "seed-w3": workshop({
     title: "Ship the MVP, part 1: ruthless scoping",
     mentorName: "Josh Newall",
     description: "One core action. Fake doors, concierge MVPs, and other shortcuts.",
     inDays: 24, hour: 18, durationMins: 60,
-    milestoneId: 4,
   }),
   "seed-w4": workshop({
     title: "Ship the MVP, part 2: AI leverage + the front door",
     mentorName: "Dev Anand",
     description: "The modern stack, landing pages that convert, capturing intent.",
     inDays: 31, hour: 18, durationMins: 60,
-    milestoneId: 4,
   }),
   "seed-w5": workshop({
     title: "Traction From Nothing",
     mentorName: "Sarah Kim",
     description: "The unscalable 10, build-in-public, and feedback loops at zero scale.",
     inDays: 38, hour: 18, durationMins: 60,
-    milestoneId: 5,
   }),
   "seed-w6": workshop({
     title: "Partnerships & Leverage (advanced)",
     mentorName: "Josh Newall",
-    description: "Who already has your audience, and the pilot proposal that opens doors. Level-gated: L3 Operator+.",
+    description: "Who already has your audience, and the pilot proposal that opens doors.",
     inDays: 45, hour: 18, durationMins: 60,
-    levelGate: 3, milestoneId: 6,
   }),
   "seed-w7": workshop({
     title: "Scale What Works & Tell the Story",
     mentorName: "Josh Newall",
     description: "Reading your numbers and the 3-minute demo-day arc.",
     inDays: 52, hour: 18, durationMins: 60,
-    milestoneId: 7,
   }),
 };
 
@@ -653,7 +659,7 @@ async function main() {
   /** Delete a cohort and everything hanging off it — a bare doc delete would
    *  strand its subcollections, which stay queryable by id. */
   async function purgeCohort(id) {
-    for (const sub of ["applications", "submissions", "logs", "checkIns"]) {
+    for (const sub of ["applications", "submissions", "logs", "checkIns"]) { // submissions: legacy cleanup
       for (const child of await listIds(`cohorts/${id}/${sub}`)) {
         await del(`cohorts/${id}/${sub}/${child}`);
       }

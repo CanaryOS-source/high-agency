@@ -8,17 +8,15 @@ import {
   useUnassignedSquads,
   useConsentQueue,
 } from "../../../components/mentorData";
-import {
-  adoptCohort,
-  confirmCheckIn,
-  grantConsent,
-  requestConsentEmail,
-} from "../../../lib/db";
+import { adoptCohort, grantConsent, requestConsentEmail } from "../../../lib/db";
+import { confirmCheckIn } from "../../../lib/api";
 import { COHORT_MIN_TO_ACTIVATE, CHECKIN_DEFAULT_MINS } from "../../../lib/types";
 import type { Cohort, CheckIn } from "../../../lib/types";
 import { AvStack } from "../../../components/ui";
 import { SquadModal } from "../../../components/SquadModal";
 import { toLocalInput } from "../../../components/WorkshopForm";
+import { useCalendarStatus } from "../../../components/CalendarConnect";
+import { trackProgress } from "../../../components/Track";
 
 function daysWaiting(c: Cohort, now: number): number | null {
   return c.createdAt ? Math.floor((now - c.createdAt.toMillis()) / 86400000) : null;
@@ -37,8 +35,9 @@ export default function MentorSquadsPage() {
   const { user, profile } = useMentorGate();
   const uid = user?.uid ?? null;
 
-  const { mine, loading, requests, verifyQueue, upcomingCheckIns } =
-    useMentoredSquads(uid);
+  const { mine, loading, requests, upcomingCheckIns } = useMentoredSquads(uid);
+  const { status: calendar } = useCalendarStatus();
+  const calendarLinked = !!calendar?.connected;
   const { squads: unassigned, truncated: moreUnassigned } = useUnassignedSquads(!!uid);
   const { pending, truncated: moreConsent } = useConsentQueue(!!uid);
 
@@ -54,6 +53,7 @@ export default function MentorSquadsPage() {
   const [whenDraft, setWhenDraft] = useState("");
   const [minsDraft, setMinsDraft] = useState(CHECKIN_DEFAULT_MINS);
   const [linkDraft, setLinkDraft] = useState("");
+  const [confirmErr, setConfirmErr] = useState("");
 
   // Per-operator resend feedback in the consent queue, keyed by uid.
   const [resendState, setResendState] = useState<Record<string, string>>({});
@@ -88,15 +88,18 @@ export default function MentorSquadsPage() {
 
   async function sendConfirm(cohortId: string, checkInId: string) {
     setBusy(true);
+    setConfirmErr("");
     try {
-      await confirmCheckIn(
+      await confirmCheckIn({
         cohortId,
         checkInId,
-        new Date(whenDraft),
-        minsDraft,
-        linkDraft.trim()
-      );
+        startsAt: new Date(whenDraft).toISOString(),
+        durationMins: minsDraft,
+        meetLink: linkDraft.trim(),
+      });
       setConfirming(null);
+    } catch {
+      setConfirmErr("Couldn't confirm that. Try again.");
     } finally {
       setBusy(false);
     }
@@ -125,9 +128,6 @@ export default function MentorSquadsPage() {
 
   if (!user || !profile) return null;
 
-  /** Work waiting on this mentor for a given squad — the reason to open it. */
-  const pendingFor = (cohortId: string) =>
-    verifyQueue.filter((v) => v.cohort.id === cohortId).length;
   const nextCheckIn = (cohortId: string) =>
     upcomingCheckIns.find((u) => u.cohort.id === cohortId) ?? null;
 
@@ -136,45 +136,6 @@ export default function MentorSquadsPage() {
       <header className="screen__head">
         <h1 className="h1">Squads</h1>
       </header>
-
-      {/* ---- Proof waiting on me ---- */}
-      {verifyQueue.length > 0 && (
-        <section className="screen__block">
-          <div className="screen__label">
-            <span className="micro">Proof to verify</span>
-          </div>
-          <div className="admin-list">
-            {verifyQueue.map(({ cohort: c, submission: s, milestone: m }) => (
-              <div key={`${c.id}-${s.milestoneId}_${s.uid}`} className="tile tile--flat admin-row">
-                <div className="admin-row__body">
-                  <div className="admin-row__title">
-                    <b>
-                      {s.name} — {m.name}
-                    </b>
-                  </div>
-                  <span className="admin-row__meta">
-                    {c.name} · milestone {m.id}
-                  </span>
-                  {s.note && <span className="admin-row__meta">{s.note}</span>}
-                </div>
-                <div className="row-actions" style={{ marginTop: 0 }}>
-                  <a
-                    className="btn btn--ghost btn--sm"
-                    href={s.evidenceUrl}
-                    target="_blank"
-                    rel="noreferrer"
-                  >
-                    Proof
-                  </a>
-                  <Link className="btn btn--verify btn--sm" href={`/cohorts/${c.id}`}>
-                    Review
-                  </Link>
-                </div>
-              </div>
-            ))}
-          </div>
-        </section>
-      )}
 
       {/* ---- Check-in requests ---- */}
       {requests.length > 0 && (
@@ -227,15 +188,22 @@ export default function MentorSquadsPage() {
                         />
                       </div>
                     </div>
-                    <div className="field">
-                      <label>Meet link</label>
-                      <input
-                        value={linkDraft}
-                        onChange={(e) => setLinkDraft(e.target.value)}
-                        placeholder="https://meet.google.com/…"
-                        maxLength={500}
-                      />
-                    </div>
+                    {calendarLinked ? (
+                      <p className="micro signal" style={{ marginBottom: 10 }}>
+                        A Meet room is created on your Google Calendar and the squad is invited.
+                      </p>
+                    ) : (
+                      <div className="field">
+                        <label>Meet link</label>
+                        <input
+                          value={linkDraft}
+                          onChange={(e) => setLinkDraft(e.target.value)}
+                          placeholder="https://meet.google.com/…"
+                          maxLength={500}
+                        />
+                      </div>
+                    )}
+                    {confirmErr && <p className="form-err">{confirmErr}</p>}
                     <div className="row-actions">
                       <button
                         className="btn btn--ghost btn--sm"
@@ -273,7 +241,7 @@ export default function MentorSquadsPage() {
         ) : (
           <div className="squads">
             {mine.map((c) => {
-              const waiting = pendingFor(c.id);
+              const progress = trackProgress(c.track);
               const next = nextCheckIn(c.id);
               return (
                 <Link
@@ -300,8 +268,8 @@ export default function MentorSquadsPage() {
                       {c.state !== "active" && ` · ${c.state}`}
                     </span>
                     <span className="sq__status">
-                      {waiting > 0
-                        ? `${waiting} to verify`
+                      {progress.total === 0
+                        ? "set the track"
                         : next
                           ? `check-in ${next.checkIn
                               .startsAt!.toDate()
@@ -309,7 +277,7 @@ export default function MentorSquadsPage() {
                                 month: "short",
                                 day: "numeric",
                               })}`
-                          : "nothing pending"}
+                          : `${progress.done}/${progress.total} on track`}
                     </span>
                   </div>
                 </Link>

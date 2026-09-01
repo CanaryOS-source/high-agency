@@ -7,7 +7,8 @@ import {
   useMentoredSquadList,
 } from "../../../components/mentorData";
 import { saveProfile, watchMyUpcomingWorkshops } from "../../../lib/db";
-import { localDay } from "../../../lib/gamify";
+import { localDay } from "../../../lib/streaks";
+import { CalendarConnect } from "../../../components/CalendarConnect";
 import { DOMAINS, SKILLS } from "../../../lib/types";
 import type { Workshop } from "../../../lib/types";
 import { Avatar } from "../../../components/ui";
@@ -97,15 +98,12 @@ export default function MentorYouPage() {
             site: site.trim(),
           },
           consentStatus: profile.consentStatus,
-          xp: profile.xp,
           streak: profile.streak,
           streakFreezes: profile.streakFreezes,
           lastActiveDay:
             profile.lastActiveDay?.length === 10 ? profile.lastActiveDay : localDay(),
           lastBuildLogDay: profile.lastBuildLogDay ?? "",
-          lastRitualWeek: profile.lastRitualWeek ?? "",
           enrolledWorkshops: profile.enrolledWorkshops,
-          attendedWorkshops: profile.attendedWorkshops,
           pendingApplications: profile.pendingApplications,
         },
         false
@@ -146,6 +144,11 @@ export default function MentorYouPage() {
             <span className="cred__v">{sessions.length}</span>
           </div>
         </div>
+      </section>
+
+      {/* ---- Google Calendar: where sessions and check-ins get their Meet room ---- */}
+      <section className="screen__block" style={{ maxWidth: 640 }}>
+        <CalendarConnect returnTo="/mentor/you" />
       </section>
 
       {/* ---- What operators see when they land on one of your sessions ---- */}

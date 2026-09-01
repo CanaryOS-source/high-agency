@@ -34,9 +34,9 @@ const OPERATOR_TABS: Tab[] = [
 ];
 
 /** Mentors: the job. A mentor is not an operator with an extra page — none of
- *  the operator surfaces (the track, XP, the build log, squad discovery) are
+ *  the operator surfaces (the streak, the build log, squad discovery) are
  *  things they do, so they don't get them. Squad detail pages are shared,
- *  because that's where a mentor verifies milestones 4–7. */
+ *  because that's where a mentor writes and advances the squad's track. */
 const MENTOR_TABS: Tab[] = [
   { href: "/mentor", label: "Home", icon: HomeIcon },
   { href: "/mentor/workshops", label: "Workshops", icon: CalendarIcon },
@@ -61,8 +61,8 @@ function useTabs() {
 function Rail() {
   const { profile, logout } = useAuth();
   const { tabs, isOn } = useTabs();
-  // The HUD is the operator's game state (streak + level ring). Mentors have
-  // neither, so the rail just ends after the tabs for them.
+  // The HUD is the operator's streak. Mentors have no streak, so the rail
+  // just ends after the tabs for them.
   const showHud = profile && profile.role !== "mentor";
 
   return (

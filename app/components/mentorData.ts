@@ -13,20 +13,12 @@ import {
   watchMentoredCohorts,
   watchUnassignedCohorts,
   watchCheckIns,
-  watchSubmissions,
   watchPendingConsent,
   UNASSIGNED_SCAN_LIMIT,
   CONSENT_QUEUE_LIMIT,
   type ListenerErrorHandler,
 } from "../lib/db";
-import { milestone } from "../lib/milestones";
-import type {
-  Cohort,
-  CheckIn,
-  MilestoneSubmission,
-  Profile,
-} from "../lib/types";
-import type { Milestone } from "../lib/milestones";
+import type { Cohort, CheckIn, Profile } from "../lib/types";
 
 /** Route guard for every /mentor screen. Signed out → login. Signed in with
  *  no profile → onboarding. Signed in as an operator → the operator app,
@@ -53,12 +45,6 @@ export interface CheckInRequest {
   checkIn: CheckIn;
 }
 
-export interface VerifyItem {
-  cohort: Cohort;
-  submission: MilestoneSubmission;
-  milestone: Milestone;
-}
-
 export interface MentoredSquads {
   /** Squads this mentor owns. */
   mine: Cohort[];
@@ -68,11 +54,10 @@ export interface MentoredSquads {
   checkIns: Record<string, CheckIn[]>;
   /** Outstanding "we want time" requests across every owned squad, oldest first. */
   requests: CheckInRequest[];
-  /** Submissions waiting on *this mentor* — milestones 4–7 only. Peer-lead
-   *  milestones (1–3) are the squad's own job and never surface here. */
-  verifyQueue: VerifyItem[];
   /** Confirmed check-ins still ahead, soonest first. */
   upcomingCheckIns: CheckInRequest[];
+  /** Live squads with no track written yet — the mentor's first job. */
+  needsTrack: Cohort[];
 }
 
 /** Just the squads a mentor owns — one listener, no children. For surfaces
@@ -91,14 +76,12 @@ export function useMentoredSquadList(mentorUid: string | null): {
   return { mine: useMemo(() => mine ?? [], [mine]), loading: mine === null };
 }
 
-/** Everything hanging off the squads a mentor owns. One subscription per
- *  squad — mentors hold a handful, and going per-squad keeps every read on
- *  the squad-scoped rules the squad page already uses (no collection-group
- *  query, no extra index). */
+/** Everything hanging off the squads a mentor owns. One check-in listener
+ *  per squad — mentors hold a handful, and going per-squad keeps every read
+ *  on the squad-scoped rules the squad page already uses. */
 export function useMentoredSquads(mentorUid: string | null): MentoredSquads {
   const { mine: squads, loading } = useMentoredSquadList(mentorUid);
   const [checkIns, setCheckIns] = useState<Record<string, CheckIn[]>>({});
-  const [subs, setSubs] = useState<Record<string, MilestoneSubmission[]>>({});
   const [now] = useState(() => Date.now());
 
   // Keyed on the ids rather than the array so an unrelated field changing on
@@ -122,31 +105,22 @@ export function useMentoredSquads(mentorUid: string | null): MentoredSquads {
      * So: re-attach on permission-denied, backing off, a few times. Everything
      * else (a real denial, a mentor who genuinely can't read this squad) gives
      * up quietly rather than looping. */
-    const attach = <T>(
-      make: (onData: (v: T) => void, onError: ListenerErrorHandler) => Unsubscribe,
-      onData: (v: T) => void,
-      tries = 0
-    ): void => {
+    const attach = (id: string, tries = 0): void => {
       unsubs.push(
-        make(onData, (e) => {
-          if (cancelled || e.code !== "permission-denied" || tries >= 3) return;
-          setTimeout(() => {
-            if (!cancelled) attach(make, onData, tries + 1);
-          }, 400 * 2 ** tries);
-        })
+        watchCheckIns(
+          id,
+          (list) => setCheckIns((p) => ({ ...p, [id]: list })),
+          ((e) => {
+            if (cancelled || e.code !== "permission-denied" || tries >= 3) return;
+            setTimeout(() => {
+              if (!cancelled) attach(id, tries + 1);
+            }, 400 * 2 ** tries);
+          }) as ListenerErrorHandler
+        )
       );
     };
 
-    for (const id of ids.split(",")) {
-      attach<CheckIn[]>(
-        (onData, onError) => watchCheckIns(id, onData, onError),
-        (list) => setCheckIns((p) => ({ ...p, [id]: list }))
-      );
-      attach<MilestoneSubmission[]>(
-        (onData, onError) => watchSubmissions(id, onData, onError),
-        (list) => setSubs((p) => ({ ...p, [id]: list }))
-      );
-    }
+    for (const id of ids.split(",")) attach(id);
 
     return () => {
       cancelled = true;
@@ -164,8 +138,7 @@ export function useMentoredSquads(mentorUid: string | null): MentoredSquads {
         )
         .sort(
           (a, b) =>
-            (a.checkIn.createdAt?.toMillis() ?? 0) -
-            (b.checkIn.createdAt?.toMillis() ?? 0)
+            (a.checkIn.createdAt?.toMillis() ?? 0) - (b.checkIn.createdAt?.toMillis() ?? 0)
         ),
     [squads, checkIns]
   );
@@ -176,41 +149,22 @@ export function useMentoredSquads(mentorUid: string | null): MentoredSquads {
         .flatMap((c) =>
           (checkIns[c.id] ?? [])
             .filter(
-              (k) =>
-                k.status === "confirmed" &&
-                k.startsAt &&
-                k.startsAt.toDate().getTime() > now
+              (k) => k.status === "confirmed" && k.startsAt && k.startsAt.toDate().getTime() > now
             )
             .map((k) => ({ cohort: c, checkIn: k }))
         )
         .sort(
-          (a, b) =>
-            a.checkIn.startsAt!.toDate().getTime() -
-            b.checkIn.startsAt!.toDate().getTime()
+          (a, b) => a.checkIn.startsAt!.toDate().getTime() - b.checkIn.startsAt!.toDate().getTime()
         ),
     [squads, checkIns, now]
   );
 
-  const verifyQueue = useMemo(
-    () =>
-      squads
-        .flatMap((c) =>
-          (subs[c.id] ?? [])
-            .filter((s) => s.status === "submitted")
-            .map((s) => ({ cohort: c, submission: s, milestone: milestone(s.milestoneId) }))
-        )
-        .filter(
-          (x): x is VerifyItem => !!x.milestone && x.milestone.verifier === "mentor"
-        )
-        .sort(
-          (a, b) =>
-            (a.submission.createdAt?.toMillis() ?? 0) -
-            (b.submission.createdAt?.toMillis() ?? 0)
-        ),
-    [squads, subs]
+  const needsTrack = useMemo(
+    () => squads.filter((c) => c.state !== "archived" && (c.track ?? []).length === 0),
+    [squads]
   );
 
-  return { mine: squads, loading, checkIns, requests, verifyQueue, upcomingCheckIns };
+  return { mine: squads, loading, checkIns, requests, upcomingCheckIns, needsTrack };
 }
 
 export interface UnassignedFeed {

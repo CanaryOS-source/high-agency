@@ -15,7 +15,7 @@
  * an error string to display, or null on success.
  */
 import { useMemo, useState } from "react";
-import { localDay } from "../lib/gamify";
+import { localDay } from "../lib/streaks";
 import { DOMAINS, SKILLS } from "../lib/types";
 import { COUNTRIES } from "../lib/countries";
 import { Bar } from "./ui";

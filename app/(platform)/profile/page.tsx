@@ -4,9 +4,9 @@ import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { useAuth } from "../../components/AuthProvider";
 import { saveProfile } from "../../lib/db";
-import { levelOf, nextLevel, levelProgress, localDay } from "../../lib/gamify";
+import { localDay } from "../../lib/streaks";
 import { DOMAINS, SKILLS } from "../../lib/types";
-import { Avatar, Bar, FlameIcon } from "../../components/ui";
+import { Avatar, FlameIcon } from "../../components/ui";
 import type { VentureStage } from "../../lib/types";
 
 const STAGES: { id: VentureStage; label: string }[] = [
@@ -40,8 +40,8 @@ export default function ProfilePage() {
   useEffect(() => {
     if (user === null) router.replace("/login");
     else if (user && profile === null) router.replace("/onboarding");
-    // The operator card carries level, XP and streak — none of which a
-    // mentor has. They edit a mentor-shaped card instead.
+    // The operator card carries the streak, which a mentor doesn't have.
+    // They edit a mentor-shaped card instead.
     else if (profile?.role === "mentor") router.replace("/mentor/you");
   }, [user, profile, router]);
 
@@ -96,14 +96,11 @@ export default function ProfilePage() {
           bio: bio.trim(),
           links: { github: github.trim(), linkedin: linkedin.trim(), site: site.trim() },
           consentStatus: profile.consentStatus,
-          xp: profile.xp,
           streak: profile.streak,
           streakFreezes: profile.streakFreezes,
           lastActiveDay: profile.lastActiveDay?.length === 10 ? profile.lastActiveDay : localDay(),
           lastBuildLogDay: profile.lastBuildLogDay ?? "",
-          lastRitualWeek: profile.lastRitualWeek ?? "",
           enrolledWorkshops: profile.enrolledWorkshops,
-          attendedWorkshops: profile.attendedWorkshops,
           pendingApplications: profile.pendingApplications,
         },
         false
@@ -120,8 +117,7 @@ export default function ProfilePage() {
 
   if (!user || !profile) return null;
 
-  const lvl = levelOf(profile.xp);
-  const next = nextLevel(profile.xp);
+  const alive = profile.lastActiveDay === localDay();
 
   return (
     <div className="screen">
@@ -132,12 +128,15 @@ export default function ProfilePage() {
           <div style={{ flex: 1, minWidth: 200 }}>
             <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
               <h1 className="h2">{profile.name}</h1>
-              <span className="badge badge--level">
-                L{lvl.level} {lvl.name}
+              <span
+                className={`hud__stat ${alive ? "hud__stat--fire" : ""}`}
+                title={alive ? "Streak alive today" : "Ship something today to keep it"}
+              >
+                <FlameIcon size={14} /> {profile.streak}
               </span>
               {profile.streakFreezes > 0 && (
                 <span className="badge" title="Streak freezes banked">
-                  <FlameIcon size={11} /> ×{profile.streakFreezes}
+                  ×{profile.streakFreezes} freeze{profile.streakFreezes === 1 ? "" : "s"}
                 </span>
               )}
             </div>
@@ -146,17 +145,11 @@ export default function ProfilePage() {
             </span>
           </div>
         </div>
-        <div style={{ marginTop: 16 }}>
-          <Bar value={levelProgress(profile.xp)} />
-          <div className="screen__label" style={{ marginTop: 8, marginBottom: 0 }}>
-            <span className="micro signal">{profile.xp} xp</span>
-            {next && (
-              <span className="micro">
-                {next.xp - profile.xp} to L{next.level} {next.name}
-              </span>
-            )}
-          </div>
-        </div>
+        <p className="micro" style={{ marginTop: 12 }}>
+          {alive
+            ? "Counted today. A build log, a ritual, or a workshop keeps it going tomorrow."
+            : "Nothing shipped yet today — one build-log line keeps the streak."}
+        </p>
       </section>
 
       {/* ---- Edit ---- */}

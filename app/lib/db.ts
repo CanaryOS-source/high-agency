@@ -14,8 +14,6 @@ import {
   onSnapshot,
   serverTimestamp,
   writeBatch,
-  runTransaction,
-  increment,
   arrayUnion,
   arrayRemove,
   Timestamp,
@@ -29,16 +27,15 @@ import type {
   Cohort,
   CohortApplication,
   DeclineReason,
-  MilestoneSubmission,
   BuildLog,
   Workshop,
   CheckIn,
   WeeklyHours,
   MentorSignupInput,
+  TrackMilestone,
 } from "./types";
-import { canActivate, workshopSpots, CHECKIN_DEFAULT_MINS } from "./types";
-import { XP, localDay, isoWeek, touchStreak } from "./gamify";
-import { milestone } from "./milestones";
+import { canActivate, CHECKIN_DEFAULT_MINS, TRACK_MAX_MILESTONES } from "./types";
+import { localDay, isoWeek, touchStreak } from "./streaks";
 
 export const MAX_PENDING_APPLICATIONS = 3;
 
@@ -67,18 +64,15 @@ function normalizeProfile(uid: string, data: Record<string, unknown>): Profile {
     plan: "free",
     role: "operator",
     consentStatus: "none",
-    xp: 0,
     streak: 0,
     streakFreezes: 0,
     lastActiveDay: "",
     lastBuildLogDay: "",
-    lastRitualWeek: "",
     ...data,
     uid,
     domains: (data.domains as string[]) ?? [],
     skills: (data.skills as string[]) ?? [],
     enrolledWorkshops: (data.enrolledWorkshops as string[]) ?? [],
-    attendedWorkshops: (data.attendedWorkshops as string[]) ?? [],
     pendingApplications: (data.pendingApplications as string[]) ?? [],
     links: {
       github: "",
@@ -207,7 +201,6 @@ export async function createCohort(
     state: "forming",
     founderUid: founder.uid,
     founderName: founder.name,
-    peerLeadUid: founder.uid,
     memberUids: [founder.uid],
     memberNames: { [founder.uid]: founder.name },
     open: true,
@@ -219,26 +212,41 @@ export async function createCohort(
 }
 
 /** Weekly ritual check-in: any member marks "we held it" once per ISO
- *  week. Extends the cohort streak; the caller separately earns their
- *  personal ritual XP (capped 1/week). */
+ *  week. Extends the squad's weekly streak, and showing up counts as a
+ *  qualifying action for the caller's own daily streak. */
 export async function markRitual(cohort: Cohort, profile: Profile): Promise<void> {
   const week = isoWeek();
-  const db = getDb();
   if (cohort.lastRitualWeek !== week) {
     const prev = isoWeek(new Date(Date.now() - 7 * 86400000));
-    await updateDoc(doc(db, "cohorts", cohort.id), {
+    await updateDoc(doc(getDb(), "cohorts", cohort.id), {
       weeklyStreak: cohort.lastRitualWeek === prev ? cohort.weeklyStreak + 1 : 1,
       lastRitualWeek: week,
     });
   }
-  if (profile.lastRitualWeek !== week) {
-    await updateDoc(doc(db, "profiles", profile.uid), {
-      xp: increment(XP.ritual),
-      lastRitualWeek: week,
-      updatedAt: serverTimestamp(),
-    });
-    await touchStreak({ ...profile, lastRitualWeek: week });
-  }
+  await touchStreak(profile);
+}
+
+/* ---------------- The track (mentor-authored) ---------------- */
+
+/** The squad's mentor writes the whole track in one go: the ordered list of
+ *  milestones with their done state. Rules restrict this write to the
+ *  assigned mentor and bound the list length; the shape of each milestone
+ *  is trusted from the mentor (staff). */
+export async function saveTrack(
+  cohortId: string,
+  track: TrackMilestone[]
+): Promise<void> {
+  if (track.length > TRACK_MAX_MILESTONES) throw new Error("track-too-long");
+  await updateDoc(doc(getDb(), "cohorts", cohortId), {
+    track: track.map((m) => ({
+      id: m.id,
+      title: m.title,
+      detail: m.detail,
+      dueDay: m.dueDay,
+      doneAt: m.doneAt,
+    })),
+    trackUpdatedAt: serverTimestamp(),
+  });
 }
 
 /* ---------------- Mentor adoption ---------------- */
@@ -343,24 +351,6 @@ export async function requestCheckIn(
     meetLink: "",
     createdAt: serverTimestamp(),
     confirmedAt: null,
-  });
-}
-
-/** The assigned mentor puts a time + link on a request. Nothing else about
- *  the check-in can change — the rules pin it to exactly these fields. */
-export async function confirmCheckIn(
-  cohortId: string,
-  checkInId: string,
-  when: Date,
-  durationMins: number,
-  meetLink: string
-): Promise<void> {
-  await updateDoc(doc(getDb(), "cohorts", cohortId, "checkIns", checkInId), {
-    status: "confirmed",
-    startsAt: Timestamp.fromDate(when),
-    durationMins,
-    meetLink,
-    confirmedAt: serverTimestamp(),
   });
 }
 
@@ -488,85 +478,6 @@ export async function decideApplication(
   await batch.commit();
 }
 
-/* ---------------- Milestone submissions ---------------- */
-
-function submissionId(milestoneId: number, uid: string): string {
-  return `${milestoneId}_${uid}`;
-}
-
-export function watchSubmissions(
-  cohortId: string,
-  cb: (subs: MilestoneSubmission[]) => void,
-  onError?: ListenerErrorHandler
-): Unsubscribe {
-  return onSnapshot(
-    collection(getDb(), "cohorts", cohortId, "submissions"),
-    (snap) => cb(snap.docs.map((d) => d.data() as MilestoneSubmission)),
-    listenerError(`submissions/${cohortId}`, onError)
-  );
-}
-
-/** Submit (or resubmit — same doc id) evidence for a milestone. A
- *  submission is a qualifying action, so it also feeds the streak. */
-export async function submitMilestone(
-  cohortId: string,
-  profile: Profile,
-  milestoneId: number,
-  evidenceUrl: string,
-  note: string
-): Promise<void> {
-  await setDoc(
-    doc(getDb(), "cohorts", cohortId, "submissions", submissionId(milestoneId, profile.uid)),
-    {
-      uid: profile.uid,
-      name: profile.name,
-      milestoneId,
-      evidenceUrl,
-      note,
-      status: "submitted",
-      verifierUid: null,
-      verifierName: null,
-      returnReason: null,
-      createdAt: serverTimestamp(),
-      decidedAt: null,
-    }
-  );
-  await touchStreak(profile);
-}
-
-/** Verify or return a submission. Milestones 1–3: the cohort peer-lead.
- *  4–7: a mentor. Verified milestones pay their XP to the submitter;
- *  returned ones come back with a specific reason and a resubmit path —
- *  returned ≠ rejected, and streaks never punish a return. */
-export async function decideSubmission(
-  cohortId: string,
-  sub: MilestoneSubmission,
-  verifier: Profile,
-  verdict: "verified" | "returned",
-  returnReason: string | null = null
-): Promise<void> {
-  const db = getDb();
-  await updateDoc(
-    doc(db, "cohorts", cohortId, "submissions", submissionId(sub.milestoneId, sub.uid)),
-    {
-      status: verdict,
-      verifierUid: verifier.uid,
-      verifierName: verifier.name,
-      returnReason: verdict === "returned" ? returnReason : null,
-      decidedAt: serverTimestamp(),
-    }
-  );
-  if (verdict === "verified") {
-    const m = milestone(sub.milestoneId);
-    if (m) {
-      await updateDoc(doc(db, "profiles", sub.uid), {
-        xp: increment(m.xp),
-        updatedAt: serverTimestamp(),
-      });
-    }
-  }
-}
-
 /* ---------------- Build log ---------------- */
 
 export function watchBuildLogs(
@@ -583,8 +494,7 @@ export function watchBuildLogs(
   }, listenerError(`logs/${cohortId}`));
 }
 
-/** The cheapest qualifying action: one line keeps the streak alive.
- *  XP is capped at one log per local day. */
+/** The cheapest qualifying action: one line keeps the streak alive. */
 export async function addBuildLog(
   cohortId: string,
   profile: Profile,
@@ -601,7 +511,6 @@ export async function addBuildLog(
   });
   if (profile.lastBuildLogDay !== today) {
     await updateDoc(doc(db, "profiles", profile.uid), {
-      xp: increment(XP.buildLog),
       lastBuildLogDay: today,
       updatedAt: serverTimestamp(),
     });
@@ -613,14 +522,15 @@ export async function removeBuildLog(cohortId: string, logId: string): Promise<v
   await deleteDoc(doc(getDb(), "cohorts", cohortId, "logs", logId));
 }
 
-/* ---------------- Workshops ---------------- */
+/* ---------------- Workshops (reads) ---------------- */
+/* Every workshop WRITE — authoring, enrolling, leaving — goes through the
+   Route Handlers in app/api/workshops/** (see lib/api.ts), because each one
+   may also touch the host mentor's Google Calendar. Clients only read. */
 
-/** The catalog is workshops only. Legacy `office_hours` docs are filtered
- *  out here rather than deleted — office hours became squad-scoped check-ins
- *  (cohorts/{id}/checkIns) and are never globally enrollable again. Filtered
- *  client-side to avoid a composite index on (kind, startsAt). */
+/** Legacy `office_hours` docs predate squad check-ins; hide rather than
+ *  delete them. */
 function catalogOnly(docs: Workshop[]): Workshop[] {
-  return docs.filter((w) => w.kind !== "office_hours");
+  return docs.filter((w) => (w as { kind?: string }).kind !== "office_hours");
 }
 
 export async function getUpcomingWorkshops(): Promise<Workshop[]> {
@@ -652,86 +562,9 @@ export async function getPastWorkshops(): Promise<Workshop[]> {
   );
 }
 
-export type EnrollResult = "enrolled" | "already" | "full";
-
-/** Take a seat. The workshop doc is the source of truth for capacity, so the
- *  seat is claimed inside a transaction that re-reads the roster — two
- *  operators racing for the last spot can't both win. The rules enforce the
- *  same cap independently (a client can't write itself past capacity), and
- *  profiles.enrolledWorkshops is updated in the same commit as a mirror for
- *  the per-user reads the UI already does. */
-export async function enrollWorkshop(
-  uid: string,
-  workshopId: string
-): Promise<EnrollResult> {
-  const db = getDb();
-  const wRef = doc(db, "workshops", workshopId);
-  const pRef = doc(db, "profiles", uid);
-
-  return runTransaction(db, async (tx) => {
-    const snap = await tx.get(wRef);
-    if (!snap.exists()) throw new Error("no-workshop");
-    const w = { id: snap.id, ...snap.data() } as Workshop;
-
-    if ((w.enrolledUids ?? []).includes(uid)) {
-      // Idempotent: repair the mirror in case a prior run half-committed.
-      tx.update(pRef, {
-        enrolledWorkshops: arrayUnion(workshopId),
-        updatedAt: serverTimestamp(),
-      });
-      return "already" as const;
-    }
-    if (workshopSpots(w).full) return "full" as const;
-
-    tx.update(wRef, { enrolledUids: arrayUnion(uid) });
-    tx.update(pRef, {
-      enrolledWorkshops: arrayUnion(workshopId),
-      updatedAt: serverTimestamp(),
-    });
-    return "enrolled" as const;
-  });
-}
-
-/** Self-reported live attendance (client-trusted v1): 50 XP, once per
- *  workshop, and it counts as a qualifying action for the streak.
- *  Workshops only — squad check-ins pay nothing here, because the weekly
- *  ritual (+25) already covers squad-mentor cadence. Server-enforced
- *  attendance stays deferred (see prd.md). */
-export async function markAttended(profile: Profile, w: Workshop): Promise<void> {
-  if (w.kind !== "workshop") return;
-  if (profile.attendedWorkshops.includes(w.id)) return;
-  await updateDoc(doc(getDb(), "profiles", profile.uid), {
-    attendedWorkshops: arrayUnion(w.id),
-    xp: increment(XP.workshopLive),
-    updatedAt: serverTimestamp(),
-  });
-  await touchStreak(profile);
-}
-
-/* ---------------- Admin: workshop authoring (mentors) ---------------- */
-
-/** Everything a mentor edits. Ownership (`mentorUid`, `mentorName`) and the
- *  roster (`enrolledUids`) are NOT in here: the owner is stamped from auth at
- *  create and immutable after, and the roster only ever moves through
- *  enrollWorkshop. startsAt is a JS Date in the form, stored as a Timestamp. */
-export type WorkshopInput = Omit<
-  Workshop,
-  "id" | "startsAt" | "mentorUid" | "mentorName" | "enrolledUids"
-> & { startsAt: Date };
-
-/** Live view of the whole catalog (past + upcoming) for the admin panel. */
-export function watchAllWorkshops(cb: (workshops: Workshop[]) => void): Unsubscribe {
-  const q = query(collection(getDb(), "workshops"), orderBy("startsAt", "desc"));
-  return onSnapshot(q, (snap) => {
-    cb(snap.docs.map((d) => ({ id: d.id, ...d.data() }) as Workshop));
-  });
-}
-
 /** Every session inside a window, oldest first — what the mentor calendar
- *  subscribes to for the month on screen. Bounded by the window rather than
- *  by a page size, so the read cost tracks what's rendered no matter how
- *  large the catalog grows. Range + orderBy are the same single field, so
- *  this needs no composite index. */
+ *  subscribes to for the week on screen. Range + orderBy are the same single
+ *  field, so this needs no composite index. */
 export function watchWorkshopsBetween(
   from: Date,
   to: Date,
@@ -768,59 +601,6 @@ export function watchMyUpcomingWorkshops(
       )
     );
   });
-}
-
-function workshopDoc(input: WorkshopInput, mentor: Profile) {
-  return {
-    title: input.title,
-    // Auto-filled from the signed-in mentor — never typed, so the byline on a
-    // session always matches the account that owns it.
-    mentorName: mentor.name,
-    mentorUid: mentor.uid,
-    description: input.description,
-    kind: input.kind,
-    startsAt: Timestamp.fromDate(input.startsAt),
-    durationMins: input.durationMins,
-    meetLink: input.meetLink,
-    // Capacity is a workshop concept; office-hours-kind docs (legacy only —
-    // the form no longer offers the kind) carry no cap.
-    ...(input.kind === "workshop" && typeof input.capacity === "number"
-      ? { capacity: input.capacity }
-      : {}),
-    open: input.open,
-    levelGate: input.levelGate,
-    milestoneId: input.milestoneId,
-    recordingUrl: input.recordingUrl,
-  };
-}
-
-export async function createWorkshop(
-  input: WorkshopInput,
-  mentor: Profile
-): Promise<string> {
-  const ref = await addDoc(collection(getDb(), "workshops"), {
-    ...workshopDoc(input, mentor),
-    enrolledUids: [],
-  });
-  return ref.id;
-}
-
-/** Edit in place. The roster is carried through untouched — a full-document
- *  write must not silently empty the seats people already claimed. */
-export async function updateWorkshop(
-  id: string,
-  input: WorkshopInput,
-  mentor: Profile,
-  enrolledUids: string[]
-): Promise<void> {
-  await setDoc(doc(getDb(), "workshops", id), {
-    ...workshopDoc(input, mentor),
-    enrolledUids,
-  });
-}
-
-export async function deleteWorkshop(id: string): Promise<void> {
-  await deleteDoc(doc(getDb(), "workshops", id));
 }
 
 /* ---------------- Admin: member consent (mentors) ---------------- */

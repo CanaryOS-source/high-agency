@@ -1,3 +1,13 @@
+> **Revision note (2026-09-01).** The platform was revamped after this handoff was
+> written: **no XP, levels or gates** (streaks only); **workshops are any-topic mentor
+> sessions** with seats, scheduled from the mentor home screen or calendar, with
+> **Google Calendar + Meet** when the mentor connects their account (`/mentor/you`);
+> the **track is written and advanced by each squad's mentor** on `/cohorts/[id]` (no
+> operator submissions, no peer-leads, no verify queue); and **check-ins are confirmed
+> server-side** and land on the calendar. Where a checklist below mentions XP, levels,
+> "verify", "submit proof" or "peer lead", read it against `CLAUDE.md` → Domain model
+> instead. The local E2E flow in `docs/qa-e2e.md` is current.
+
 # QA handoff — giving Josh the mentor + student views
 
 Everything you need to hand High Agency to someone outside the repo and have them

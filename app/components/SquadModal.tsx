@@ -155,8 +155,8 @@ export function SquadModal({
                     <span className="mem__body">
                       <span className="mem__name">
                         {name}
-                        {uid === cohort.peerLeadUid && (
-                          <span className="chip chip--why">peer lead</span>
+                        {uid === cohort.founderUid && (
+                          <span className="chip chip--why">founder</span>
                         )}
                       </span>
                       {p === undefined ? (

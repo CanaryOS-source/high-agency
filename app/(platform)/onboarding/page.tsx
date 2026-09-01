@@ -4,7 +4,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { useAuth } from "../../components/AuthProvider";
 import { saveProfile, savePrivateProfile, requestConsentEmail } from "../../lib/db";
-import { localDay } from "../../lib/gamify";
+import { localDay } from "../../lib/streaks";
 import { DOMAINS, SKILLS } from "../../lib/types";
 import { COUNTRIES } from "../../lib/countries";
 import { Bar } from "../../components/ui";
@@ -193,14 +193,11 @@ export default function OnboardingPage() {
           consentStatus: isMinor ? "pending" : "granted",
           plan: "free",
           role: "operator",
-          xp: 0,
           streak: 1,
           streakFreezes: 0,
           lastActiveDay: localDay(),
           lastBuildLogDay: "",
-          lastRitualWeek: "",
           enrolledWorkshops: [],
-          attendedWorkshops: [],
           pendingApplications: [],
         },
         true

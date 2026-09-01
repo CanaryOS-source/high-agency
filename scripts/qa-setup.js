@@ -194,7 +194,6 @@ async function main() {
       state: s("forming"),
       founderUid: s(uids.operator),
       founderName: s(founder.name),
-      peerLeadUid: s(uids.operator),
       memberUids: arr([uids.operator]),
       memberNames: map({ [uids.operator]: founder.name }),
       open: { booleanValue: true },

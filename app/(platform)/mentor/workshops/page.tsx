@@ -2,20 +2,17 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { useMentorGate } from "../../../components/mentorData";
-import {
-  watchWorkshopsBetween,
-  createWorkshop,
-  updateWorkshop,
-  deleteWorkshop,
-} from "../../../lib/db";
+import { watchWorkshopsBetween } from "../../../lib/db";
+import { createWorkshop, updateWorkshop, deleteWorkshop } from "../../../lib/api";
 import { workshopSpots } from "../../../lib/types";
 import type { Workshop } from "../../../lib/types";
-import { PlusIcon } from "../../../components/ui";
+import { CalendarIcon, PlusIcon } from "../../../components/ui";
+import { useCalendarStatus } from "../../../components/CalendarConnect";
 import {
   WorkshopForm,
   blankDraft,
   draftFrom,
-  draftToInput,
+  draftToWire,
   type Draft,
 } from "../../../components/WorkshopForm";
 
@@ -59,6 +56,7 @@ function fmtRange(from: Date, to: Date): string {
 
 export default function MentorWorkshopsPage() {
   const { user, profile } = useMentorGate();
+  const { status: calendar } = useCalendarStatus();
 
   const [today] = useState(() => new Date());
   const [weekStart, setWeekStart] = useState(() => startOfWeek(new Date()));
@@ -115,13 +113,9 @@ export default function MentorWorkshopsPage() {
     setBusy(true);
     setError("");
     try {
-      const input = draftToInput(draft);
-      if (editingId) {
-        // Carry the roster through untouched — an edit must never empty seats.
-        await updateWorkshop(editingId, input, profile, editing?.enrolledUids ?? []);
-      } else {
-        await createWorkshop(input, profile);
-      }
+      const input = draftToWire(draft);
+      if (editingId) await updateWorkshop(editingId, input);
+      else await createWorkshop(input);
       // Jump to whichever week the session actually landed in.
       setWeekStart(startOfWeek(new Date(draft.startsAt)));
       cancel();
@@ -166,6 +160,8 @@ export default function MentorWorkshopsPage() {
           onCancel={cancel}
           busy={busy}
           title={editingId ? "Edit session" : "New session"}
+          calendarLinked={editingId ? !!editing?.calendarEventId : !!calendar?.connected}
+          editing={!!editingId}
         />
       )}
       {error && <p className="form-err">{error}</p>}
@@ -253,11 +249,10 @@ export default function MentorWorkshopsPage() {
                             <span className="wcal__body">
                               <span className="wcal__title">
                                 {w.title}
-                                {w.open && (
-                                  <span className="chip chip--why">open to all</span>
-                                )}
-                                {w.levelGate > 0 && (
-                                  <span className="chip chip--on">L{w.levelGate}+</span>
+                                {w.calendarEventId && (
+                                  <span className="chip chip--why" title="On the host's Google Calendar with a Meet room">
+                                    <CalendarIcon size={12} /> Meet
+                                  </span>
                                 )}
                               </span>
                               <span className="wcal__by">
@@ -265,7 +260,6 @@ export default function MentorWorkshopsPage() {
                                 {seats.capacity === null
                                   ? `${seats.taken} enrolled`
                                   : `${seats.taken}/${seats.capacity} seats`}
-                                {w.milestoneId > 0 && ` · milestone ${w.milestoneId}`}
                               </span>
                             </span>
                             {mine && editingId === null && (

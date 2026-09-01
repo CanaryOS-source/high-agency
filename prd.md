@@ -1,3 +1,12 @@
+> **Revision note (2026-09-01).** The platform diverges from this document in four places,
+> by decision: (1) there is **no XP, no levels and no level gating** — the only game
+> mechanic is the streak; (2) **workshops are independent of the track** and are any-topic
+> sessions a mentor hosts, with seats, and with Google Calendar + Meet integration; (3) the
+> **track is written from scratch by each squad's mentor** (up to 20 steps, marked done for
+> the whole squad) — there are no operator submissions, no peer-leads and no verification
+> tiers; (4) mentor ↔ squad check-ins are confirmed server-side and land on Google Calendar.
+> `CLAUDE.md` is the current source of truth where the two disagree.
+
 # Product Requirements Document: High Agency Platform — v1
 
 **Revenue model variant:** Freemium (mentorship \+ premium features gated)   

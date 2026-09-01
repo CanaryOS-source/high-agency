@@ -1,6 +1,8 @@
 /**
- * Firestore security-rules tests for parental-consent enforcement (and the
- * pre-existing write paths it guards). Run against the Firestore emulator:
+ * Firestore security-rules tests: parental-consent enforcement, the
+ * founding-batch gate, workshops (server-only writes), squad check-ins,
+ * mentor adoption + the activation gate, and the mentor-owned track. Run
+ * against the Firestore emulator:
  *
  *   npm run test:rules
  *
@@ -9,7 +11,7 @@
  *
  * The core claim under test: a minor whose consentStatus is "pending" is
  * DENIED — at the rules level — from every community write (create cohort,
- * apply, submit milestone, post build log, tick the ritual), while a "granted"
+ * apply, post build log, tick the ritual), while a "granted"
  * operator succeeds at the identical writes. Plus: a pending minor can't
  * self-grant consent, and the consentTokens collection is fully locked to
  * clients.
@@ -53,7 +55,6 @@ function profile(uid, consentStatus, role = "operator") {
     skills: ["Coding"],
     consentStatus,
     plan: "free",
-    xp: 0,
     streak: 1,
     streakFreezes: 0,
     lastActiveDay: "2026-07-10",
@@ -76,7 +77,6 @@ function fullCohort(overrides = {}) {
     state: "forming",
     founderUid: "founder",
     founderName: "Test O.",
-    peerLeadUid: "founder",
     memberUids: ["founder", "granted", "minor"],
     memberNames: { founder: "Test O.", granted: "Test O.", minor: "Test O." },
     open: true,
@@ -106,25 +106,26 @@ function checkIn(overrides = {}) {
   };
 }
 
-/** A rules-valid workshop owned by mentorA. */
+/** A workshop owned by mentorA, shaped like the server writes it. */
 function workshop(overrides = {}) {
   return {
     title: "The Cold Ask",
     mentorName: "Mentor A.",
     mentorUid: "mentorA",
     description: "",
-    kind: "workshop",
     startsAt: Timestamp.fromMillis(Date.now() + 86400000),
     durationMins: 60,
     meetLink: "https://meet.example/x",
     capacity: 3,
     enrolledUids: [],
-    open: true,
-    levelGate: 0,
-    milestoneId: 0,
     recordingUrl: "",
     ...overrides,
   };
+}
+
+/** One step of a mentor-written track. */
+function step(i, done = false) {
+  return { id: `s${i}`, title: `Step ${i}`, detail: "", dueDay: "", doneAt: done ? Date.now() : null };
 }
 
 let testEnv;
@@ -158,7 +159,6 @@ beforeEach(async () => {
     // the consent check). Only the fields the rules read are needed.
     await setDoc(doc(db, "cohorts/squad"), {
       founderUid: "founder",
-      peerLeadUid: "founder",
       memberUids: ["founder", "minor", "granted"],
       weeklyStreak: 2,
       lastRitualWeek: "2026-W27",
@@ -179,7 +179,6 @@ beforeEach(async () => {
     // A different squad neither is a member of, to apply into.
     await setDoc(doc(db, "cohorts/openSquad"), {
       founderUid: "founder",
-      peerLeadUid: "founder",
       memberUids: ["founder"],
       weeklyStreak: 0,
     });
@@ -207,22 +206,6 @@ beforeEach(async () => {
 
     // mentorA's session with two seats, one already taken.
     await setDoc(doc(db, "workshops/owned"), workshop({ enrolledUids: ["someone"] }));
-    // Sold out.
-    await setDoc(
-      doc(db, "workshops/full"),
-      workshop({ capacity: 2, enrolledUids: ["a", "b"] })
-    );
-    // Pre-capacity legacy doc: no mentorUid, no capacity, no roster.
-    await setDoc(doc(db, "workshops/legacy"), {
-      title: "Old session",
-      mentorName: "Josh N.",
-      kind: "workshop",
-      startsAt: Timestamp.now(),
-      durationMins: 60,
-      open: true,
-      levelGate: 0,
-      milestoneId: 0,
-    });
   });
 });
 
@@ -237,7 +220,6 @@ function createCohort(db, uid) {
     state: "forming",
     founderUid: uid,
     founderName: "Test O.",
-    peerLeadUid: uid,
     memberUids: [uid],
     memberNames: { [uid]: "Test O." },
     open: true,
@@ -255,16 +237,6 @@ function applyToOpenSquad(db, uid) {
     status: "pending",
     declineReason: null,
     createdAt: serverTimestamp(),
-  });
-}
-
-function submitMilestone(db, uid) {
-  return setDoc(doc(db, `cohorts/squad/submissions/1_${uid}`), {
-    uid,
-    name: "Test O.",
-    milestoneId: 1,
-    evidenceUrl: "https://example.com/proof",
-    status: "submitted",
   });
 }
 
@@ -297,11 +269,6 @@ test("pending minor is denied: create application", async () => {
   await assertFails(applyToOpenSquad(db, "minor"));
 });
 
-test("pending minor is denied: create milestone submission", async () => {
-  const db = testEnv.authenticatedContext("minor").firestore();
-  await assertFails(submitMilestone(db, "minor"));
-});
-
 test("pending minor is denied: post build log", async () => {
   const db = testEnv.authenticatedContext("minor").firestore();
   await assertFails(postBuildLog(db, "minor"));
@@ -322,11 +289,6 @@ test("granted operator is allowed: create cohort", async () => {
 test("granted operator is allowed: create application", async () => {
   const db = testEnv.authenticatedContext("granted").firestore();
   await assertSucceeds(applyToOpenSquad(db, "granted"));
-});
-
-test("granted operator is allowed: create milestone submission", async () => {
-  const db = testEnv.authenticatedContext("granted").firestore();
-  await assertSucceeds(submitMilestone(db, "granted"));
 });
 
 test("granted operator is allowed: post build log", async () => {
@@ -486,155 +448,41 @@ test("pending minor can still READ (sees the waiting-on-consent state)", async (
 });
 
 /* ========================================================================= *
- *  A. Workshops — capacity + ownership
+ *  A. Workshops — readable by everyone signed in, written only by the server
  * ========================================================================= */
 
-const enroll = (db, id, uid) =>
-  updateDoc(doc(db, `workshops/${id}`), { enrolledUids: arrayUnion(uid) });
-
-test("operator can take a seat while the workshop is under capacity", async () => {
+test("WORKSHOPS: a signed-in operator can read the catalog", async () => {
   const db = testEnv.authenticatedContext("granted").firestore();
-  await assertSucceeds(enroll(db, "owned", "granted"));
+  await assertSucceeds(getDoc(doc(db, "workshops/owned")));
 });
 
-test("CAPACITY: enrolling into a full workshop is denied", async () => {
-  const db = testEnv.authenticatedContext("granted").firestore();
-  await assertFails(enroll(db, "full", "granted"));
+test("WORKSHOPS: a signed-out visitor cannot read it", async () => {
+  const db = testEnv.unauthenticatedContext().firestore();
+  await assertFails(getDoc(doc(db, "workshops/owned")));
 });
 
-test("CAPACITY: the seat that tips a workshop over the cap is denied", async () => {
-  // capacity 3, one seat gone: two more fit, the third does not.
-  const a = testEnv.authenticatedContext("granted").firestore();
-  const b = testEnv.authenticatedContext("founder").firestore();
-  const c = testEnv.authenticatedContext("minor").firestore();
-  await assertSucceeds(enroll(a, "owned", "granted"));
-  await assertSucceeds(enroll(b, "owned", "founder"));
-  await assertFails(enroll(c, "owned", "minor"));
-});
-
-test("SELF-ENROLL: an operator cannot enroll somebody else", async () => {
+test("WORKSHOPS: an operator cannot enroll from the browser (server route only)", async () => {
   const db = testEnv.authenticatedContext("granted").firestore();
-  await assertFails(enroll(db, "owned", "founder"));
-});
-
-test("SELF-ENROLL: an operator cannot drop an existing enrollee", async () => {
-  const db = testEnv.authenticatedContext("granted").firestore();
-  // Swap the seated uid for their own — same list size, so only hasAll() and
-  // the size arithmetic together catch it.
   await assertFails(
-    updateDoc(doc(db, "workshops/owned"), { enrolledUids: ["granted"] })
+    updateDoc(doc(db, "workshops/owned"), { enrolledUids: arrayUnion("granted") })
   );
 });
 
-test("SELF-ENROLL: an operator cannot smuggle a second uid in", async () => {
-  const db = testEnv.authenticatedContext("granted").firestore();
-  await assertFails(
-    updateDoc(doc(db, "workshops/owned"), {
-      enrolledUids: ["someone", "granted", "founder"],
-    })
-  );
-});
-
-test("SELF-ENROLL: an operator cannot change anything else on the way in", async () => {
-  const db = testEnv.authenticatedContext("granted").firestore();
-  await assertFails(
-    updateDoc(doc(db, "workshops/owned"), {
-      enrolledUids: arrayUnion("granted"),
-      capacity: 200,
-    })
-  );
-  await assertFails(
-    updateDoc(doc(db, "workshops/owned"), {
-      enrolledUids: arrayUnion("granted"),
-      title: "Hijacked",
-    })
-  );
-});
-
-test("SELF-ENROLL: enrolling twice is denied (no double seat)", async () => {
-  const db = testEnv.authenticatedContext("granted").firestore();
-  await assertSucceeds(enroll(db, "owned", "granted"));
-  await assertFails(
-    updateDoc(doc(db, "workshops/owned"), {
-      enrolledUids: ["someone", "granted", "granted"],
-    })
-  );
-});
-
-test("LEGACY: a pre-capacity workshop stays enrollable (uncapped, not broken)", async () => {
-  const db = testEnv.authenticatedContext("granted").firestore();
-  await assertSucceeds(enroll(db, "legacy", "granted"));
-});
-
-test("OWNERSHIP: a mentor may edit their own workshop", async () => {
+test("WORKSHOPS: a mentor cannot author a session from the browser", async () => {
   const db = testEnv.authenticatedContext("mentorA").firestore();
-  await assertSucceeds(
-    updateDoc(doc(db, "workshops/owned"), { title: "The Cold Ask, v2" })
-  );
+  await assertFails(addDoc(collection(db, "workshops"), workshop()));
 });
 
-test("OWNERSHIP: a mentor may NOT edit another mentor's workshop", async () => {
-  const db = testEnv.authenticatedContext("mentorB").firestore();
-  await assertFails(
-    updateDoc(doc(db, "workshops/owned"), { title: "Mine now" })
-  );
-});
-
-test("OWNERSHIP: a mentor may NOT delete another mentor's workshop", async () => {
-  const db = testEnv.authenticatedContext("mentorB").firestore();
+test("WORKSHOPS: a mentor cannot edit or delete their own session from the browser", async () => {
+  const db = testEnv.authenticatedContext("mentorA").firestore();
+  await assertFails(updateDoc(doc(db, "workshops/owned"), { title: "v2" }));
   await assertFails(deleteDoc(doc(db, "workshops/owned")));
 });
 
-test("OWNERSHIP: a mentor may delete their own workshop", async () => {
+test("GOOGLE TOKENS: clients cannot read or write a mentor's calendar token", async () => {
   const db = testEnv.authenticatedContext("mentorA").firestore();
-  await assertSucceeds(deleteDoc(doc(db, "workshops/owned")));
-});
-
-test("OWNERSHIP: nobody may edit an unowned legacy workshop", async () => {
-  const db = testEnv.authenticatedContext("mentorA").firestore();
-  await assertFails(updateDoc(doc(db, "workshops/legacy"), { title: "Adopted" }));
-});
-
-test("OWNERSHIP: mentorUid is immutable — ownership can't be handed off", async () => {
-  const db = testEnv.authenticatedContext("mentorA").firestore();
-  await assertFails(
-    updateDoc(doc(db, "workshops/owned"), { mentorUid: "mentorB" })
-  );
-});
-
-test("CREATE: a mentor must stamp themselves as owner", async () => {
-  const db = testEnv.authenticatedContext("mentorA").firestore();
-  await assertSucceeds(addDoc(collection(db, "workshops"), workshop()));
-  await assertFails(
-    addDoc(collection(db, "workshops"), workshop({ mentorUid: "mentorB" }))
-  );
-});
-
-test("CREATE: a workshop without a capacity is denied", async () => {
-  const db = testEnv.authenticatedContext("mentorA").firestore();
-  const noCapacity = workshop();
-  delete noCapacity.capacity;
-  await assertFails(addDoc(collection(db, "workshops"), noCapacity));
-});
-
-test("CREATE: capacity outside 2–200 is denied", async () => {
-  const db = testEnv.authenticatedContext("mentorA").firestore();
-  await assertFails(addDoc(collection(db, "workshops"), workshop({ capacity: 1 })));
-  await assertFails(addDoc(collection(db, "workshops"), workshop({ capacity: 500 })));
-});
-
-test("CREATE: a mentor cannot pre-fill the roster", async () => {
-  const db = testEnv.authenticatedContext("mentorA").firestore();
-  await assertFails(
-    addDoc(collection(db, "workshops"), workshop({ enrolledUids: ["granted"] }))
-  );
-});
-
-test("CREATE: an operator still cannot author a workshop", async () => {
-  const db = testEnv.authenticatedContext("granted").firestore();
-  await assertFails(
-    addDoc(collection(db, "workshops"), workshop({ mentorUid: "granted" }))
-  );
+  await assertFails(getDoc(doc(db, "googleTokens/mentorA")));
+  await assertFails(setDoc(doc(db, "googleTokens/mentorA"), { refreshTokenEnc: "x" }));
 });
 
 /* ========================================================================= *
@@ -706,12 +554,12 @@ const confirm = (db) =>
     confirmedAt: serverTimestamp(),
   });
 
-test("CONFIRM: the assigned mentor can put a time on a request", async () => {
+test("CONFIRM: even the assigned mentor cannot confirm from the browser (server route only)", async () => {
   const db = testEnv.authenticatedContext("mentorA").firestore();
-  await assertSucceeds(confirm(db));
+  await assertFails(confirm(db));
 });
 
-test("CONFIRM: another mentor cannot confirm it", async () => {
+test("CONFIRM: another mentor cannot confirm it either", async () => {
   const db = testEnv.authenticatedContext("mentorB").firestore();
   await assertFails(confirm(db));
 });
@@ -719,31 +567,6 @@ test("CONFIRM: another mentor cannot confirm it", async () => {
 test("CONFIRM: a squad member cannot confirm their own request", async () => {
   const db = testEnv.authenticatedContext("granted").firestore();
   await assertFails(confirm(db));
-});
-
-test("CONFIRM: the mentor cannot rewrite the request itself", async () => {
-  const db = testEnv.authenticatedContext("mentorA").firestore();
-  await assertFails(
-    updateDoc(doc(db, "cohorts/mentored/checkIns/req1"), {
-      status: "confirmed",
-      startsAt: Timestamp.now(),
-      durationMins: 30,
-      meetLink: "",
-      note: "rewritten",
-    })
-  );
-});
-
-test("CONFIRM: an already-confirmed check-in cannot be re-confirmed", async () => {
-  const db = testEnv.authenticatedContext("mentorA").firestore();
-  await assertFails(
-    updateDoc(doc(db, "cohorts/mentored/checkIns/done1"), {
-      status: "confirmed",
-      startsAt: Timestamp.now(),
-      durationMins: 90,
-      meetLink: "https://meet.example/moved",
-    })
-  );
 });
 
 test("CHECK-IN: the requester may withdraw while it is still a request", async () => {
@@ -858,13 +681,99 @@ test("GATE: a new squad still cannot be created straight into 'active'", async (
     addDoc(collection(db, "cohorts"), {
       ...fullCohort({
         founderUid: "granted",
-        peerLeadUid: "granted",
         memberUids: ["granted"],
         memberNames: { granted: "Test O." },
         state: "active",
         mentorUid: "mentorA",
         mentorName: "Mentor A.",
       }),
+    })
+  );
+});
+
+/* ========================================================================= *
+ *  D. The track — written by the squad's mentor, read by the squad
+ * ========================================================================= */
+
+const writeTrack = (db, cohortId, track) =>
+  updateDoc(doc(db, `cohorts/${cohortId}`), { track, trackUpdatedAt: serverTimestamp() });
+
+test("TRACK: the assigned mentor can write the squad's track", async () => {
+  const db = testEnv.authenticatedContext("mentorA").firestore();
+  await assertSucceeds(writeTrack(db, "mentored", [step(1), step(2)]));
+});
+
+test("TRACK: the assigned mentor can mark a step done", async () => {
+  const db = testEnv.authenticatedContext("mentorA").firestore();
+  await assertSucceeds(writeTrack(db, "mentored", [step(1, true), step(2)]));
+});
+
+test("TRACK: another mentor cannot write it", async () => {
+  const db = testEnv.authenticatedContext("mentorB").firestore();
+  await assertFails(writeTrack(db, "mentored", [step(1)]));
+});
+
+test("TRACK: the founder cannot write it", async () => {
+  const db = testEnv.authenticatedContext("founder").firestore();
+  await assertFails(writeTrack(db, "mentored", [step(1)]));
+});
+
+test("TRACK: a member cannot write it", async () => {
+  const db = testEnv.authenticatedContext("granted").firestore();
+  await assertFails(writeTrack(db, "mentored", [step(1)]));
+});
+
+test("TRACK: a mentor cannot write a track onto a squad nobody has adopted", async () => {
+  const db = testEnv.authenticatedContext("mentorA").firestore();
+  await assertFails(writeTrack(db, "unclaimed", [step(1)]));
+});
+
+test("TRACK: more than 20 steps is denied", async () => {
+  const db = testEnv.authenticatedContext("mentorA").firestore();
+  const many = Array.from({ length: 21 }, (_, i) => step(i + 1));
+  await assertFails(writeTrack(db, "mentored", many));
+});
+
+test("TRACK: the mentor cannot smuggle other fields in with the track", async () => {
+  const db = testEnv.authenticatedContext("mentorA").firestore();
+  await assertFails(
+    updateDoc(doc(db, "cohorts/mentored"), {
+      track: [step(1)],
+      trackUpdatedAt: serverTimestamp(),
+      name: "Renamed",
+    })
+  );
+});
+
+test("TRACK: the founder's own edits leave the track untouched", async () => {
+  await testEnv.withSecurityRulesDisabled(async (ctx) => {
+    await setDoc(
+      doc(ctx.firestore(), "cohorts/mentored"),
+      fullCohort({ mentorUid: "mentorA", mentorName: "Mentor A.", state: "active", track: [step(1)] })
+    );
+  });
+  const db = testEnv.authenticatedContext("founder").firestore();
+  await assertSucceeds(updateDoc(doc(db, "cohorts/mentored"), { mission: "New mission" }));
+  await assertFails(updateDoc(doc(db, "cohorts/mentored"), { mission: "New mission", track: [] }));
+});
+
+test("TRACK: a new squad cannot be created with a track already on it", async () => {
+  const db = testEnv.authenticatedContext("granted").firestore();
+  await assertFails(
+    addDoc(collection(db, "cohorts"), {
+      name: "New Squad",
+      mission: "Ship something",
+      meetingSlot: "Sundays 7pm ET",
+      timezone: "America/Toronto",
+      state: "forming",
+      founderUid: "granted",
+      founderName: "Test O.",
+      memberUids: ["granted"],
+      memberNames: { granted: "Test O." },
+      open: true,
+      weeklyStreak: 0,
+      createdAt: serverTimestamp(),
+      track: [step(1)],
     })
   );
 });

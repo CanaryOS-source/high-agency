@@ -2,7 +2,7 @@
 
 /* Squad roster — the compact avatar stack for evaluation surfaces (the
    open-squads list), with the reading built in: hover or focus a disc for
-   a one-line peek (headline + level); click for the full profile overlay.
+   a one-line peek (headline); click for the full profile overlay.
    Past 4 members the stack scrolls horizontally so the tile stays compact.
    Profiles load lazily on first hover and are cached for the session. The
    plain `.avstack` stays the non-interactive "who's here" everywhere else
@@ -11,7 +11,6 @@
 import { useState } from "react";
 import type { Profile } from "../lib/types";
 import { getProfile } from "../lib/db";
-import { levelOf } from "../lib/gamify";
 import { Avatar } from "./ui";
 import { ProfileModal } from "./ProfileModal";
 
@@ -89,10 +88,7 @@ export function SquadRoster({
       </span>
       {peek && (
         <span className="peek" style={{ left: peek.x, top: peek.y }} aria-hidden="true">
-          <span className="peek__name">
-            {names[peek.uid] ?? "?"}
-            {peeked && <span className="peek__lvl">L{levelOf(peeked.xp).level}</span>}
-          </span>
+          <span className="peek__name">{names[peek.uid] ?? "?"}</span>
           <span className="peek__line">
             {peeked === undefined
               ? "…"

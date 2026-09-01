@@ -1,9 +1,9 @@
 "use client";
 
+import { useState } from "react";
 import type { Profile, Workshop } from "../lib/types";
 import { workshopSpots } from "../lib/types";
-import { canEnroll } from "../lib/gamify";
-import { CheckIcon, LockIcon } from "./ui";
+import { CalendarIcon } from "./ui";
 
 /** Seats left, shown everywhere a session renders. Silent when the session
  *  is uncapped (legacy docs only) or the viewer already holds a seat. */
@@ -23,66 +23,56 @@ function dateParts(ts: { toDate: () => Date }): { day: string; mon: string; time
   };
 }
 
-/** The action cluster for one workshop: attended → enrolled/join → enroll → locked.
- *  Every surface that lists sessions must render this — never a bare Join link. */
+export function isEnrolled(w: Workshop, profile: Profile): boolean {
+  // The workshop doc is authoritative for seats; the profile mirror is the
+  // fallback for legacy enrollments made before the roster moved onto the doc.
+  return (w.enrolledUids ?? []).includes(profile.uid) || profile.enrolledWorkshops.includes(w.id);
+}
+
+/** The action cluster for one workshop: join/leave when enrolled, enroll
+ *  otherwise, "full" when there's no seat. Every surface that lists sessions
+ *  renders this — never a bare Join link. */
 export function SessionAction({
   w,
   profile,
   onEnroll,
-  onAttend,
+  onLeave,
 }: {
   w: Workshop;
   profile: Profile;
   onEnroll?: (w: Workshop) => void;
-  onAttend?: (w: Workshop) => void;
+  onLeave?: (w: Workshop) => void;
 }) {
-  // The workshop doc is authoritative for seats; the profile mirror is the
-  // fallback for legacy enrollments made before the roster moved onto the doc.
-  const enrolled =
-    (w.enrolledUids ?? []).includes(profile.uid) ||
-    profile.enrolledWorkshops.includes(w.id);
-  const attended = profile.attendedWorkshops.includes(w.id);
-  const gate = canEnroll(profile, w);
+  // Captured once per mount: "has it started?" needs a clock, and reading
+  // one during render is impure.
+  const [now] = useState(() => Date.now());
+  const enrolled = isEnrolled(w, profile);
   const full = workshopSpots(w).full;
-  const started = w.startsAt.toDate().getTime() < Date.now() + w.durationMins * 60000;
+  const started = w.startsAt.toDate().getTime() <= now;
 
-  if (attended)
-    return (
-      <span className="ses__done">
-        <CheckIcon size={12} /> +50
-      </span>
-    );
   if (enrolled)
     return (
       <>
-        <a className="btn btn--primary btn--sm" href={w.meetLink} target="_blank" rel="noreferrer">
-          Join
-        </a>
-        {started && onAttend && (
-          <button className="btn btn--verify btn--sm" onClick={() => onAttend(w)}>
-            I went
+        {w.meetLink ? (
+          <a className="btn btn--primary btn--sm" href={w.meetLink} target="_blank" rel="noreferrer">
+            Join
+          </a>
+        ) : (
+          <span className="micro">link coming</span>
+        )}
+        {!started && onLeave && (
+          <button className="btn btn--ghost btn--sm" onClick={() => onLeave(w)} title="Give the seat back">
+            Leave
           </button>
         )}
       </>
     );
-  if (gate.ok)
-    return (
-      <button className="btn btn--ghost btn--sm" onClick={() => onEnroll?.(w)}>
-        Enroll
-      </button>
-    );
-  if (full)
-    return (
-      <span className="ses__lock" title="Every seat is taken">
-        Full
-      </span>
-    );
-  // The row already carries the "L3+" chip — the lock says *locked*, not the
-  // same number a second time.
+  if (full) return <span className="ses__lock" title="Every seat is taken">Full</span>;
+  if (started) return <span className="micro">started</span>;
   return (
-    <span className="ses__lock" title={gate.reason}>
-      <LockIcon /> Locked
-    </span>
+    <button className="btn btn--ghost btn--sm" onClick={() => onEnroll?.(w)}>
+      Enroll
+    </button>
   );
 }
 
@@ -91,40 +81,42 @@ export function WorkshopList({
   workshops,
   profile,
   onEnroll,
-  onAttend,
+  onLeave,
 }: {
   workshops: Workshop[];
   profile: Profile;
   onEnroll?: (w: Workshop) => void;
-  onAttend?: (w: Workshop) => void;
+  onLeave?: (w: Workshop) => void;
 }) {
   return (
     <div>
       {workshops.map((w) => {
-        const enrolled =
-          (w.enrolledUids ?? []).includes(profile.uid) ||
-          profile.enrolledWorkshops.includes(w.id);
-        const attended = profile.attendedWorkshops.includes(w.id);
+        const enrolled = isEnrolled(w, profile);
         const { day, mon, time } = dateParts(w.startsAt);
 
         return (
           <div key={w.id} className="ses">
-            <div className={`ses__date ${enrolled && !attended ? "ses__date--live" : ""}`}>
+            <div className={`ses__date ${enrolled ? "ses__date--live" : ""}`}>
               <b>{day}</b>
               <span>{mon}</span>
             </div>
             <div className="ses__body">
               <span className="ses__title">
                 {w.title}
-                {w.levelGate > 0 && <span className="chip chip--on">L{w.levelGate}+</span>}
                 {!enrolled && <SeatChip w={w} />}
+                {enrolled && w.calendarEventId && (
+                  <span className="chip chip--why" title="Invite sent to your Google Calendar">
+                    <CalendarIcon size={12} /> on your calendar
+                  </span>
+                )}
               </span>
               <span className="ses__meta">
-                {time} · {w.mentorName}
+                {time} · {w.durationMins}m · {w.mentorName}
               </span>
+              {w.description && <p className="path__queue-note">{w.description}</p>}
             </div>
             <div className="ses__act">
-              <SessionAction w={w} profile={profile} onEnroll={onEnroll} onAttend={onAttend} />
+              <SessionAction w={w} profile={profile} onEnroll={onEnroll} onLeave={onLeave} />
             </div>
           </div>
         );

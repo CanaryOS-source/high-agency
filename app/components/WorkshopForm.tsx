@@ -1,19 +1,18 @@
 "use client";
 
-/* Authoring a live session. Mentor-only surface — the only place a workshop
-   is created or edited. Ownership (mentorUid/mentorName) is never in the form:
-   db.workshopDoc stamps it from the signed-in mentor so a byline always
-   matches the account that owns the session. */
+/* Authoring a live session — the only place a workshop is created or edited.
+   Kept to what a mentor actually decides: what, when, how long, how many.
+   Ownership is stamped server-side, and the Meet room comes from the mentor's
+   Google Calendar when it's connected, so the link field only appears when
+   there is nothing to generate it from. */
 
-import { TRACK } from "../lib/milestones";
-import { LEVELS } from "../lib/gamify";
+import type { WorkshopWire } from "../lib/api";
 import {
   WORKSHOP_MIN_CAPACITY,
   WORKSHOP_MAX_CAPACITY,
   WORKSHOP_DEFAULT_CAPACITY,
 } from "../lib/types";
 import type { Workshop } from "../lib/types";
-import type { WorkshopInput } from "../lib/db";
 
 /** datetime-local <-> Date, both in the browser's local timezone. */
 export function toLocalInput(d: Date): string {
@@ -23,9 +22,6 @@ export function toLocalInput(d: Date): string {
   )}:${pad(d.getMinutes())}`;
 }
 
-/** The authored session. `kind` is gone from the form — office hours are no
- *  longer a catalog item (they're squad check-ins now), so everything a mentor
- *  writes here is a capped workshop. */
 export type Draft = {
   title: string;
   description: string;
@@ -33,17 +29,14 @@ export type Draft = {
   durationMins: number;
   capacity: number;
   meetLink: string;
-  open: boolean;
-  levelGate: number;
-  milestoneId: number;
   recordingUrl: string;
 };
 
 /** A fresh session. `on` seeds the date when the mentor started from a day
- *  in the calendar; otherwise it's a week out at 6pm. */
+ *  in the calendar; otherwise it's tomorrow at 6pm. */
 export function blankDraft(on?: Date): Draft {
   const d = on ? new Date(on) : new Date();
-  if (!on) d.setDate(d.getDate() + 7);
+  if (!on) d.setDate(d.getDate() + 1);
   d.setHours(18, 0, 0, 0);
   return {
     title: "",
@@ -52,9 +45,6 @@ export function blankDraft(on?: Date): Draft {
     durationMins: 60,
     capacity: WORKSHOP_DEFAULT_CAPACITY,
     meetLink: "",
-    open: false,
-    levelGate: 0,
-    milestoneId: 0,
     recordingUrl: "",
   };
 }
@@ -67,38 +57,30 @@ export function draftFrom(w: Workshop): Draft {
     durationMins: w.durationMins,
     capacity: w.capacity ?? WORKSHOP_DEFAULT_CAPACITY,
     meetLink: w.meetLink ?? "",
-    open: w.open,
-    levelGate: w.levelGate,
-    milestoneId: w.milestoneId,
     recordingUrl: w.recordingUrl ?? "",
   };
 }
 
-export function draftToInput(d: Draft): WorkshopInput {
+export function draftToWire(d: Draft): WorkshopWire {
   return {
     title: d.title.trim(),
     description: d.description.trim(),
-    kind: "workshop",
-    startsAt: new Date(d.startsAt),
+    startsAt: new Date(d.startsAt).toISOString(),
     durationMins: d.durationMins,
     capacity: d.capacity,
     meetLink: d.meetLink.trim(),
-    open: d.open,
-    levelGate: d.levelGate,
-    milestoneId: d.milestoneId,
     recordingUrl: d.recordingUrl.trim(),
   };
 }
 
-/** Clamp to the range the rules will accept, so a stray keystroke can't
- *  produce a write that silently fails. */
+/** Clamp to the range the server will accept, so a stray keystroke can't
+ *  produce a write that fails. */
 export function clampCapacity(n: number): number {
   if (!Number.isFinite(n)) return WORKSHOP_DEFAULT_CAPACITY;
-  return Math.min(
-    WORKSHOP_MAX_CAPACITY,
-    Math.max(WORKSHOP_MIN_CAPACITY, Math.round(n))
-  );
+  return Math.min(WORKSHOP_MAX_CAPACITY, Math.max(WORKSHOP_MIN_CAPACITY, Math.round(n)));
 }
+
+const DURATIONS = [30, 45, 60, 90, 120];
 
 export function WorkshopForm({
   draft,
@@ -108,6 +90,8 @@ export function WorkshopForm({
   onCancel,
   busy,
   title,
+  calendarLinked,
+  editing = false,
 }: {
   draft: Draft;
   setDraft: (d: Draft) => void;
@@ -117,18 +101,23 @@ export function WorkshopForm({
   onCancel: () => void;
   busy: boolean;
   title: string;
+  /** The Meet room will come from Google Calendar — no link to type. */
+  calendarLinked: boolean;
+  /** Editing an existing session: show the after-the-fact fields. */
+  editing?: boolean;
 }) {
-  const set = <K extends keyof Draft>(k: K, v: Draft[K]) =>
-    setDraft({ ...draft, [k]: v });
+  const set = <K extends keyof Draft>(k: K, v: Draft[K]) => setDraft({ ...draft, [k]: v });
+  const startValid = !isNaN(new Date(draft.startsAt).getTime());
 
   return (
     <div className="tile screen__block">
       <div className="tile__head">
         <h2 className="h3">{title}</h2>
+        {calendarLinked && <span className="micro signal">Meet room · your Google Calendar</span>}
       </div>
 
       <div className="field">
-        <label htmlFor="wf-title">Title</label>
+        <label htmlFor="wf-title">What is it?</label>
         <input
           id="wf-title"
           autoFocus
@@ -140,19 +129,19 @@ export function WorkshopForm({
       </div>
 
       <div className="field">
-        <label htmlFor="wf-desc">Description</label>
+        <label htmlFor="wf-desc">What operators walk away with</label>
         <textarea
           id="wf-desc"
           value={draft.description}
           onChange={(e) => set("description", e.target.value)}
-          placeholder="What operators walk away with."
+          placeholder="Two or three lines. Any topic — it's your session."
           maxLength={1000}
         />
       </div>
 
       <div className="field-row">
         <div className="field">
-          <label htmlFor="wf-starts">Starts</label>
+          <label htmlFor="wf-starts">When</label>
           <input
             id="wf-starts"
             type="datetime-local"
@@ -161,15 +150,19 @@ export function WorkshopForm({
           />
         </div>
         <div className="field">
-          <label htmlFor="wf-mins">Minutes</label>
-          <input
-            id="wf-mins"
-            type="number"
-            min={1}
-            max={600}
-            value={draft.durationMins}
-            onChange={(e) => set("durationMins", Number(e.target.value))}
-          />
+          <label>How long</label>
+          <div className="chip-row">
+            {DURATIONS.map((m) => (
+              <button
+                key={m}
+                type="button"
+                className={`pick ${draft.durationMins === m ? "sel" : ""}`}
+                onClick={() => set("durationMins", m)}
+              >
+                {m}m
+              </button>
+            ))}
+          </div>
         </div>
       </div>
 
@@ -179,7 +172,7 @@ export function WorkshopForm({
           <input
             id="wf-seats"
             type="number"
-            min={WORKSHOP_MIN_CAPACITY}
+            min={Math.max(WORKSHOP_MIN_CAPACITY, taken)}
             max={WORKSHOP_MAX_CAPACITY}
             value={draft.capacity}
             onChange={(e) => set("capacity", clampCapacity(Number(e.target.value)))}
@@ -190,89 +183,54 @@ export function WorkshopForm({
               : `${WORKSHOP_MIN_CAPACITY}–${WORKSHOP_MAX_CAPACITY}`}
           </small>
         </div>
-        <div className="field">
-          <label htmlFor="wf-link">Meet link</label>
-          <input
-            id="wf-link"
-            value={draft.meetLink}
-            onChange={(e) => set("meetLink", e.target.value)}
-            placeholder="https://meet.google.com/…"
-            maxLength={500}
-          />
-        </div>
-      </div>
-
-      <div className="field-row">
-        <div className="field">
-          <label htmlFor="wf-milestone">Teaches milestone</label>
-          <select
-            id="wf-milestone"
-            value={draft.milestoneId}
-            onChange={(e) => set("milestoneId", Number(e.target.value))}
-          >
-            <option value={0}>None</option>
-            {TRACK.map((m) => (
-              <option key={m.id} value={m.id}>
-                {m.id}. {m.name}
-              </option>
-            ))}
-          </select>
-        </div>
-        <div className="field">
-          <label htmlFor="wf-gate">Who can enroll</label>
-          <select
-            id="wf-gate"
-            value={draft.levelGate}
-            onChange={(e) => set("levelGate", Number(e.target.value))}
-          >
-            <option value={0}>Anyone</option>
-            {LEVELS.filter((l) => l.level > 1).map((l) => (
-              <option key={l.level} value={l.level}>
-                Level {l.level} {l.name} and up
-              </option>
-            ))}
-          </select>
-        </div>
-      </div>
-
-      <label className="admin-check">
-        <input
-          type="checkbox"
-          checked={draft.open}
-          onChange={(e) => set("open", e.target.checked)}
-        />
-        <span>The season&apos;s open session — free to every operator</span>
-      </label>
-
-      <details className="more">
-        <summary className="more__toggle">
-          After the session
-          <span className="more__hint">recording</span>
-        </summary>
-        <div className="more__body">
+        {!calendarLinked && (
           <div className="field">
-            <label htmlFor="wf-rec">Recording URL</label>
+            <label htmlFor="wf-link">Meet link</label>
             <input
-              id="wf-rec"
-              value={draft.recordingUrl}
-              onChange={(e) => set("recordingUrl", e.target.value)}
-              placeholder="Paste once it's posted"
+              id="wf-link"
+              value={draft.meetLink}
+              onChange={(e) => set("meetLink", e.target.value)}
+              placeholder="https://meet.google.com/…"
               maxLength={500}
             />
+            <small className="field__hint">
+              Connect Google Calendar and this is generated for you.
+            </small>
           </div>
-        </div>
-      </details>
+        )}
+      </div>
+
+      {editing && (
+        <details className="more">
+          <summary className="more__toggle">
+            After the session
+            <span className="more__hint">recording</span>
+          </summary>
+          <div className="more__body">
+            <div className="field">
+              <label htmlFor="wf-rec">Recording URL</label>
+              <input
+                id="wf-rec"
+                value={draft.recordingUrl}
+                onChange={(e) => set("recordingUrl", e.target.value)}
+                placeholder="Paste once it's posted"
+                maxLength={500}
+              />
+            </div>
+          </div>
+        </details>
+      )}
 
       <div className="row-actions">
-        <button className="btn btn--ghost" onClick={onCancel}>
+        <button className="btn btn--ghost" onClick={onCancel} disabled={busy}>
           Cancel
         </button>
         <button
           className="btn btn--primary"
           onClick={onSave}
-          disabled={busy || !draft.title.trim()}
+          disabled={busy || !draft.title.trim() || !startValid || draft.capacity < taken}
         >
-          {busy ? "…" : "Save"}
+          {busy ? "…" : editing ? "Save" : "Schedule"}
         </button>
       </div>
     </div>

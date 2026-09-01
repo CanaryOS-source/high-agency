@@ -4,7 +4,7 @@
    All icons are inline SVG, stroke 2.2, currentColor (see design-system.md). */
 
 import type { Profile } from "../lib/types";
-import { levelOf, levelProgress, localDay } from "../lib/gamify";
+import { localDay } from "../lib/streaks";
 
 type IconProps = { size?: number; filled?: boolean };
 
@@ -107,35 +107,8 @@ export function WrenchIcon({ size = 22 }: IconProps) {
   );
 }
 
-/** Level ring — SVG progress ring with the level number inside. */
-export function LevelRing({ xp, size = 40 }: { xp: number; size?: number }) {
-  const lvl = levelOf(xp);
-  const p = levelProgress(xp);
-  const r = (size - 6) / 2;
-  const c = 2 * Math.PI * r;
-  return (
-    <span className="lvlring" title={`Level ${lvl.level} · ${lvl.name} · ${xp} XP`}>
-      <svg width={size} height={size} aria-hidden="true">
-        <circle className="lvlring__track" cx={size / 2} cy={size / 2} r={r} fill="none" strokeWidth="5" />
-        <circle
-          className="lvlring__fill"
-          cx={size / 2}
-          cy={size / 2}
-          r={r}
-          fill="none"
-          strokeWidth="5"
-          strokeDasharray={c}
-          strokeDashoffset={c * (1 - p)}
-        />
-      </svg>
-      <span className="lvlring__n">L{lvl.level}</span>
-    </span>
-  );
-}
-
-/** The always-on game state: flame · level ring (XP lives inside the ring —
- *  it only exists to fill it). Never restated in copy.
- *  `col` stacks the stats vertically for the 96px desktop rail. */
+/** The always-on game state: the flame and the streak count. That's the
+ *  whole game now — no XP, no levels. `col` stacks for the desktop rail. */
 export function Hud({ profile, col = false }: { profile: Profile; col?: boolean }) {
   const alive = profile.lastActiveDay === localDay();
   return (
@@ -146,7 +119,6 @@ export function Hud({ profile, col = false }: { profile: Profile; col?: boolean 
         </span>
         {profile.streak}
       </span>
-      <LevelRing xp={profile.xp} />
     </div>
   );
 }

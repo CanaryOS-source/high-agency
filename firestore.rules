@@ -3,7 +3,7 @@ service cloud.firestore {
   match /databases/{database}/documents {
 
     // ===============================================================
-    // Data Model (v1.1 — squad cohorts, milestone track, build logs)
+    // Data Model (v2 — squads, mentor-owned tracks, streaks, workshops)
     // ===============================================================
     //
     // Collection: applications (legacy public waitlist)
@@ -32,28 +32,31 @@ service cloud.firestore {
     //   role ('operator'|'mentor') and plan ('free'|'pro') are set by
     //   admin tooling (OAuth bypasses rules) or, for mentors, by the
     //   invite-redemption Route Handler (Admin SDK — /api/mentor/redeem);
-    //   clients can't grant themselves either. Other users may bump xp only (bounded) —
-    //   this is how verifiers pay out milestone XP (client-trusted v1).
+    //   clients can't grant themselves either. There is no XP: the streak
+    //   fields are the only game state, owner-written (client-trusted v1).
     //
     // Collection: privateProfiles/{uid} — DOB, full name, exact city,
     //   parent email. Owner-only, both directions. Never listed.
     //
     // Collection: cohorts/{id} — accountability squads (3–8 operators).
     //   Founder manages the doc; any member may update only the weekly
-    //   ritual streak fields. peerLead verifies milestones 1–3. A squad is
-    //   adopted by exactly one mentor (mentorUid), who verifies 4–7 and takes
-    //   its check-ins — and a squad cannot reach state 'active' without both
-    //   3+ members and that mentor.
+    //   ritual streak fields. A squad is adopted by exactly one mentor
+    //   (mentorUid), who alone writes the squad's `track` (the ordered list
+    //   of milestones and their done state) and takes its check-ins — and a
+    //   squad cannot reach state 'active' without both 3+ members and that
+    //   mentor.
     //   Subcollections:
     //     applications/{applicantUid} — pitch + status + declineReason
-    //     submissions/{milestoneId_uid} — per-operator milestone evidence
     //     logs/{auto} — build log entries (the squad's pulse)
     //     checkIns/{auto} — squad↔mentor sessions, visible to that squad only
     //
-    // Collection: workshops — mentor-authored catalog, readable by every
-    //   signed-in user. Each doc is OWNED (mentorUid) and CAPPED (capacity);
-    //   the roster lives on the doc (enrolledUids) so the cap is enforceable
-    //   here, and an operator may only ever add their own uid to it.
+    // Collection: workshops — mentor-hosted sessions, readable by every
+    //   signed-in user and WRITTEN ONLY BY THE SERVER (app/api/workshops/**,
+    //   Admin SDK): authoring, enrolling and leaving all go through Route
+    //   Handlers because each may also touch the host's Google Calendar.
+    //
+    // Collection: googleTokens/{uid} — a mentor's encrypted Google refresh
+    //   token. Server-only, deny-all, same posture as consentTokens.
     //
     // Collection: approvedMembers/{email} — TEMPORARY founding-batch access
     //   gate. Doc id is the trimmed+lowercased email; fields are role
@@ -112,10 +115,6 @@ service cloud.firestore {
       return isAuthenticated() && request.auth.uid == cohortData(cohortId).founderUid;
     }
 
-    function isCohortPeerLead(cohortId) {
-      return isAuthenticated() && request.auth.uid == cohortData(cohortId).peerLeadUid;
-    }
-
     // The mentor who adopted this squad. Legacy squads have no mentorUid at
     // all, so read it defensively — absent means nobody holds the role.
     function isCohortMentor(cohortId) {
@@ -130,7 +129,7 @@ service cloud.firestore {
 
     // Parental-consent gate for community writes. A minor whose parent hasn't
     // approved yet has consentStatus == 'pending' and is blocked from all
-    // community writes (cohorts, applications, submissions, logs, rituals).
+    // community writes (cohorts, applications, logs, rituals, check-ins).
     // Missing profile / missing field (legacy or adult) reads as allowed —
     // only an explicit 'pending' blocks. Grants are server- or mentor-driven,
     // never a self-write (consentStatus is immutable on the owner update path).
@@ -309,14 +308,17 @@ service cloud.firestore {
                'headline', 'building', 'stage', 'domains', 'skills',
                'proofUrl', 'proofNote', 'hours', 'bio', 'links',
                'consentStatus', 'consentEmailSentAt', 'plan', 'role',
-               'xp', 'streak', 'streakFreezes', 'lastActiveDay',
-               'lastBuildLogDay', 'lastRitualWeek',
-               'enrolledWorkshops', 'attendedWorkshops', 'pendingApplications',
-               'createdAt', 'updatedAt']) &&
+               'streak', 'streakFreezes', 'lastActiveDay', 'lastBuildLogDay',
+               'enrolledWorkshops', 'pendingApplications',
+               'createdAt', 'updatedAt',
+               // Legacy XP-era fields: tolerated on docs that still carry
+               // them so a merge-write of an old profile keeps validating.
+               // Nothing reads them.
+               'xp', 'attendedWorkshops', 'lastRitualWeek']) &&
              hasRequiredFields(['uid', 'name', 'ageBand', 'country', 'timezone',
                'headline', 'building', 'stage', 'domains', 'skills',
                'consentStatus', 'plan', 'role',
-               'xp', 'streak', 'streakFreezes', 'lastActiveDay',
+               'streak', 'streakFreezes', 'lastActiveDay',
                'pendingApplications', 'updatedAt']) &&
              data.uid == request.auth.uid &&
              validString(data.name, 1, 80) &&
@@ -339,29 +341,16 @@ service cloud.firestore {
              (!('consentEmailSentAt' in data) || data.consentEmailSentAt is timestamp) &&
              data.plan in ['free', 'pro'] &&
              data.role in ['operator', 'mentor'] &&
-             data.xp is number && data.xp >= 0 && data.xp <= 10000000 &&
              data.streak is number && data.streak >= 0 && data.streak <= 100000 &&
              data.streakFreezes is number && data.streakFreezes >= 0 && data.streakFreezes <= 3 &&
              validString(data.lastActiveDay, 10, 10) &&
              (!('lastBuildLogDay' in data) || validString(data.lastBuildLogDay, 0, 10)) &&
-             (!('lastRitualWeek' in data) || validString(data.lastRitualWeek, 0, 8)) &&
              (!('enrolledWorkshops' in data) || validStringList(data.enrolledWorkshops, 100)) &&
-             (!('attendedWorkshops' in data) || validStringList(data.attendedWorkshops, 100)) &&
              validStringList(data.pendingApplications, 3);
     }
 
-    // Verifiers pay milestone XP into other operators' profiles: the
-    // only cross-user write allowed is a bounded xp increase.
-    function isXpAward() {
-      return isAuthenticated() &&
-             request.resource.data.diff(resource.data).affectedKeys().hasOnly(['xp', 'updatedAt']) &&
-             request.resource.data.xp is number &&
-             request.resource.data.xp > resource.data.xp &&
-             request.resource.data.xp <= resource.data.xp + 300;
-    }
-
     // Mentors (trusted staff) grant parental consent in-app — the only
-    // other cross-user profile write. Scoped to flipping consentStatus to
+    // cross-user profile write. Scoped to flipping consentStatus to
     // 'granted'; role and plan grants stay server-side (admin CLI tooling
     // and the mentor-invite redemption route).
     function isConsentGrant() {
@@ -393,7 +382,6 @@ service cloud.firestore {
       allow update: if (isOwner(userId) && isValidProfile(request.resource.data) &&
                         areImmutableFieldsUnchanged(['uid', 'createdAt', 'role', 'plan',
                           'consentStatus', 'consentEmailSentAt'])) ||
-                       isXpAward() ||
                        isConsentGrant();
       allow delete: if false;
     }
@@ -421,11 +409,14 @@ service cloud.firestore {
 
     function isValidCohort(data) {
       return hasOnlyAllowedFields(['name', 'mission', 'tags', 'lookingFor', 'meetingSlot',
-               'link', 'icon', 'timezone', 'state', 'founderUid', 'founderName', 'peerLeadUid',
+               'link', 'icon', 'timezone', 'state', 'founderUid', 'founderName',
                'mentorUid', 'mentorName', 'mentorNotifiedAt',
-               'memberUids', 'memberNames', 'open', 'weeklyStreak', 'lastRitualWeek', 'createdAt']) &&
+               'memberUids', 'memberNames', 'open', 'weeklyStreak', 'lastRitualWeek',
+               'track', 'trackUpdatedAt', 'createdAt',
+               // Legacy: the peer-lead role is gone; old docs still carry it.
+               'peerLeadUid']) &&
              hasRequiredFields(['name', 'mission', 'meetingSlot', 'timezone', 'state',
-               'founderUid', 'founderName', 'peerLeadUid',
+               'founderUid', 'founderName',
                'memberUids', 'memberNames', 'open', 'weeklyStreak', 'createdAt']) &&
              validString(data.name, 1, 60) &&
              validString(data.mission, 1, 140) &&
@@ -449,8 +440,8 @@ service cloud.firestore {
              validString(data.timezone, 1, 60) &&
              data.state in ['forming', 'active', 'stalled', 'archived'] &&
              // ACTIVATION GATE: a squad only goes live with a real crew AND a
-             // mentor who owns it. Milestones 4–7 need a mentor to verify, so
-             // activating unassigned hands a squad a track it can't finish.
+             // mentor who owns it — the mentor runs the track, so activating
+             // unassigned hands a squad a season nobody is running.
              // Mirrors canActivate() in app/lib/types.ts.
              (data.state != 'active' ||
                (data.memberUids.size() >= 3 && data.get('mentorUid', '') != '')) &&
@@ -459,7 +450,11 @@ service cloud.firestore {
              (!('mentorUid' in data) || data.mentorUid is string) &&
              (!('mentorName' in data) || validString(data.mentorName, 0, 80)) &&
              (!('mentorNotifiedAt' in data) || data.mentorNotifiedAt is timestamp) &&
-             data.peerLeadUid is string &&
+             (!('peerLeadUid' in data) || data.peerLeadUid is string) &&
+             // The track: bounded list, mentor-written (see isTrackUpdate).
+             // Rules can't validate each element; the mentor is staff.
+             (!('track' in data) || validStringList(data.track, 20)) &&
+             (!('trackUpdatedAt' in data) || data.trackUpdatedAt is timestamp) &&
              validStringList(data.memberUids, 8) && data.memberUids.size() >= 1 &&
              data.memberNames is map && data.memberNames.size() <= 8 &&
              data.open is bool &&
@@ -467,7 +462,18 @@ service cloud.firestore {
              (!('lastRitualWeek' in data) || validString(data.lastRitualWeek, 0, 8));
     }
 
-    // A mentor adopts an UNCLAIMED squad from the /admin feed: they write
+    // The squad's mentor — and nobody else — writes the track. Only those
+    // two fields may move; everything else on the doc is frozen to them.
+    function isTrackUpdate(cohortId) {
+      return isCohortMentor(cohortId) &&
+             request.resource.data.diff(resource.data).affectedKeys()
+               .hasOnly(['track', 'trackUpdatedAt']) &&
+             request.resource.data.track is list &&
+             request.resource.data.track.size() <= 20 &&
+             request.resource.data.trackUpdatedAt is timestamp;
+    }
+
+    // A mentor adopts an UNCLAIMED squad from the adoption feed: they write
     // themselves in as its mentor and, if the crew is already ≥3, flip it live
     // in the same write. Deliberately one-way — the condition is "no mentor
     // yet", so no client can steal or reassign a squad that already has one,
@@ -498,31 +504,31 @@ service cloud.firestore {
     match /cohorts/{cohortId} {
       allow read: if isAuthenticated();
 
-      // Creator must be founder, peer-lead, and sole initial member;
-      // new cohorts start forming with no streak.
+      // Creator must be founder and sole initial member; new cohorts start
+      // forming with no streak and no track (the mentor writes that later).
       allow create: if isAuthenticated() &&
                        consentAllows(request.auth.uid) &&
                        isValidCohort(request.resource.data) &&
                        request.resource.data.founderUid == request.auth.uid &&
-                       request.resource.data.peerLeadUid == request.auth.uid &&
                        request.resource.data.memberUids == [request.auth.uid] &&
                        request.resource.data.state == 'forming' &&
-                       request.resource.data.weeklyStreak == 0;
+                       request.resource.data.weeklyStreak == 0 &&
+                       !('track' in request.resource.data);
 
-      // Founder manages the doc; founder must stay a member and the
-      // peer-lead must be a member. Mentor assignment is NOT the founder's to
-      // make — it moves only through isMentorAdopt (or the Admin SDK), so a
-      // founder can't appoint themselves a mentor and self-activate. Members
-      // may only tick the ritual.
+      // Founder manages the doc; founder must stay a member. Mentor
+      // assignment and the track are NOT the founder's to write — the first
+      // moves only through isMentorAdopt (or the Admin SDK), the second only
+      // through isTrackUpdate. Members may only tick the ritual.
       allow update: if consentAllows(request.auth.uid) &&
                        ((isCohortFounder(cohortId) &&
                         isValidCohort(request.resource.data) &&
                         areImmutableFieldsUnchanged(['founderUid', 'founderName', 'createdAt',
-                          'mentorUid', 'mentorName', 'mentorNotifiedAt']) &&
-                        request.resource.data.founderUid in request.resource.data.memberUids &&
-                        request.resource.data.peerLeadUid in request.resource.data.memberUids) ||
+                          'mentorUid', 'mentorName', 'mentorNotifiedAt',
+                          'track', 'trackUpdatedAt']) &&
+                        request.resource.data.founderUid in request.resource.data.memberUids) ||
                        (isCohortMember(cohortId) && isRitualUpdate()) ||
-                       isMentorAdopt());
+                       isMentorAdopt() ||
+                       isTrackUpdate(cohortId));
 
       allow delete: if false;
 
@@ -566,56 +572,6 @@ service cloud.firestore {
         allow delete: if isOwner(applicantId) && resource.data.status == 'pending';
       }
 
-      // ---------------- Milestone submissions ----------------
-      // Doc id is `${milestoneId}_${uid}` — one per operator per
-      // milestone; resubmits overwrite in place.
-
-      function isValidSubmission(data) {
-        return hasOnlyAllowedFields(['uid', 'name', 'milestoneId', 'evidenceUrl', 'note',
-                 'status', 'verifierUid', 'verifierName', 'returnReason', 'createdAt', 'decidedAt']) &&
-               hasRequiredFields(['uid', 'name', 'milestoneId', 'evidenceUrl', 'status']) &&
-               validString(data.name, 1, 80) &&
-               data.milestoneId is number && data.milestoneId >= 1 && data.milestoneId <= 7 &&
-               validString(data.evidenceUrl, 1, 500) &&
-               (!('note' in data) || validString(data.note, 0, 500));
-      }
-
-      // Tiered verification: 1–3 peer-lead (mentor can spot-check),
-      // 4–7 mentor-only — those gate levels and go on the record.
-      function canVerify(milestoneId) {
-        return (milestoneId <= 3 && (isCohortPeerLead(cohortId) || isMentor())) ||
-               (milestoneId >= 4 && isMentor());
-      }
-
-      match /submissions/{subId} {
-        // Mentors can read without membership (they verify across squads).
-        allow read: if isCohortMember(cohortId) || isMentor();
-
-        allow create: if isCohortMember(cohortId) &&
-                         consentAllows(request.auth.uid) &&
-                         isValidSubmission(request.resource.data) &&
-                         request.resource.data.uid == request.auth.uid &&
-                         subId == string(request.resource.data.milestoneId) + '_' + request.auth.uid &&
-                         request.resource.data.status == 'submitted';
-
-        // Owner resubmits after a return; verifier decides submitted work.
-        allow update: if (isOwner(resource.data.uid) &&
-                          resource.data.status == 'returned' &&
-                          isValidSubmission(request.resource.data) &&
-                          request.resource.data.uid == resource.data.uid &&
-                          request.resource.data.milestoneId == resource.data.milestoneId &&
-                          request.resource.data.status == 'submitted') ||
-                         (canVerify(resource.data.milestoneId) &&
-                          resource.data.status == 'submitted' &&
-                          request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'verifierUid', 'verifierName', 'returnReason', 'decidedAt']) &&
-                          request.resource.data.status in ['verified', 'returned'] &&
-                          request.resource.data.verifierUid == request.auth.uid &&
-                          (request.resource.data.status == 'verified' ||
-                           validString(request.resource.data.returnReason, 1, 300)));
-
-        allow delete: if false;
-      }
-
       // ---------------- Squad check-ins ----------------
       // What "office hours" became. A check-in is squad-scoped, not a catalog
       // item: any member requests one, the squad's ASSIGNED mentor puts a time
@@ -627,7 +583,7 @@ service cloud.firestore {
       function isValidCheckIn(data) {
         return hasOnlyAllowedFields(['cohortId', 'requestedByUid', 'requestedByName',
                  'note', 'status', 'mentorUid', 'mentorName', 'startsAt',
-                 'durationMins', 'meetLink', 'createdAt', 'confirmedAt']) &&
+                 'durationMins', 'meetLink', 'calendarEventId', 'createdAt', 'confirmedAt']) &&
                hasRequiredFields(['cohortId', 'requestedByUid', 'requestedByName',
                  'status', 'mentorUid', 'createdAt']) &&
                data.cohortId == cohortId &&
@@ -655,18 +611,10 @@ service cloud.firestore {
                          cohortData(cohortId).get('mentorUid', '') != '' &&
                          request.resource.data.mentorUid == cohortData(cohortId).mentorUid;
 
-        // Only the assigned mentor confirms, only from 'requested', and only
-        // by adding a time + link. Everything else on the doc is frozen.
-        allow update: if isCohortMentor(cohortId) &&
-                         resource.data.status == 'requested' &&
-                         request.resource.data.diff(resource.data).affectedKeys()
-                           .hasOnly(['status', 'startsAt', 'durationMins', 'meetLink', 'confirmedAt']) &&
-                         request.resource.data.status == 'confirmed' &&
-                         request.resource.data.startsAt is timestamp &&
-                         request.resource.data.durationMins is number &&
-                         request.resource.data.durationMins > 0 &&
-                         request.resource.data.durationMins <= 600 &&
-                         validString(request.resource.data.meetLink, 0, 500);
+        // Confirming is SERVER-ONLY (POST /api/checkins/confirm, Admin SDK):
+        // it may create a Google Calendar event with a Meet room, so the
+        // mentor never writes the confirmation from the browser.
+        allow update: if false;
 
         // The requester may withdraw while it's still just a request.
         allow delete: if isOwner(resource.data.requestedByUid) &&
@@ -693,72 +641,25 @@ service cloud.firestore {
     }
 
     // ===============================================================
-    // Workshops — mentors author the catalog from the admin panel;
-    // every signed-in operator reads it.
+    // Workshops — read by every signed-in user, written only by the server.
+    // Authoring (mentor), enrolling and leaving (anyone) all run through
+    // app/api/workshops/** with the Admin SDK, which bypasses these rules:
+    // the seat is claimed in a server transaction, and the host mentor's
+    // Google Calendar event is kept in step with the roster.
     // ===============================================================
 
-    function isValidWorkshop(data) {
-      return hasOnlyAllowedFields(['title', 'mentorName', 'mentorUid', 'description', 'kind',
-               'startsAt', 'durationMins', 'meetLink', 'capacity', 'enrolledUids',
-               'open', 'levelGate', 'milestoneId', 'recordingUrl']) &&
-             hasRequiredFields(['title', 'mentorName', 'mentorUid', 'kind', 'startsAt',
-               'durationMins', 'open', 'levelGate', 'milestoneId']) &&
-             validString(data.title, 1, 120) &&
-             validString(data.mentorName, 1, 80) &&
-             data.mentorUid is string &&
-             (!('description' in data) || validString(data.description, 0, 1000)) &&
-             data.kind in ['workshop', 'office_hours'] &&
-             data.startsAt is timestamp &&
-             data.durationMins is number && data.durationMins > 0 && data.durationMins <= 600 &&
-             (!('meetLink' in data) || validString(data.meetLink, 0, 500)) &&
-             // Capacity is REQUIRED for kind 'workshop' (2–200 seats) and
-             // meaningless for the legacy office_hours kind. Uncapped /
-             // webinar-style sessions are deliberately deferred — see prd.md.
-             (data.kind != 'workshop' ||
-               (data.capacity is number && data.capacity >= 2 && data.capacity <= 200)) &&
-             (!('enrolledUids' in data) || validStringList(data.enrolledUids, 200)) &&
-             data.open is bool &&
-             data.levelGate is number && data.levelGate >= 0 && data.levelGate <= 5 &&
-             data.milestoneId is number && data.milestoneId >= 0 && data.milestoneId <= 7 &&
-             (!('recordingUrl' in data) || validString(data.recordingUrl, 0, 500));
-    }
-
-    // A signed-in user claims exactly ONE seat — their own — and touches
-    // nothing else on the doc. Airtight because all four hold at once:
-    //   hasAll(old)      → no existing enrollee can be dropped
-    //   size == old + 1  → exactly one uid was added
-    //   uid in new       → and it is the caller's own
-    //   size <= capacity → the room can't be oversold
-    // Legacy docs with no capacity read as uncapped rather than unenrollable.
-    function isSelfEnroll() {
-      return isAuthenticated() &&
-             request.resource.data.diff(resource.data).affectedKeys().hasOnly(['enrolledUids']) &&
-             request.resource.data.enrolledUids is list &&
-             request.resource.data.enrolledUids.hasAll(resource.data.get('enrolledUids', [])) &&
-             request.resource.data.enrolledUids.size() ==
-               resource.data.get('enrolledUids', []).size() + 1 &&
-             request.auth.uid in request.resource.data.enrolledUids &&
-             !(request.auth.uid in resource.data.get('enrolledUids', [])) &&
-             (!('capacity' in resource.data) ||
-              request.resource.data.enrolledUids.size() <= resource.data.capacity);
-    }
-
-    // Sessions have owners now. A mentor authors their own catalog and can
-    // only edit or delete what they authored — mentors no longer reach into
-    // each other's sessions. mentorUid is stamped from auth on create and
-    // frozen after, so ownership can't be transferred or forged client-side.
     match /workshops/{id} {
       allow read: if isAuthenticated();
-      allow create: if isMentor() &&
-                       isValidWorkshop(request.resource.data) &&
-                       request.resource.data.mentorUid == request.auth.uid &&
-                       request.resource.data.get('enrolledUids', []).size() == 0;
-      allow update: if (isMentor() &&
-                        resource.data.get('mentorUid', '') == request.auth.uid &&
-                        isValidWorkshop(request.resource.data) &&
-                        areImmutableFieldsUnchanged(['mentorUid'])) ||
-                       isSelfEnroll();
-      allow delete: if isMentor() && resource.data.get('mentorUid', '') == request.auth.uid;
+      allow create, update, delete: if false;
+    }
+
+    // ===============================================================
+    // Google tokens — server-only. A mentor's encrypted Google refresh
+    // token, read and written exclusively by app/lib/googleCalendar.ts.
+    // ===============================================================
+
+    match /googleTokens/{uid} {
+      allow read, write: if false;
     }
 
     // ===============================================================

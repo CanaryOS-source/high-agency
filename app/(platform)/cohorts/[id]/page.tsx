@@ -1,38 +1,31 @@
 "use client";
 
-import { use, useEffect, useMemo, useState } from "react";
+import { use, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { useAuth } from "../../../components/AuthProvider";
 import {
   watchCohort,
-  watchSubmissions,
   watchBuildLogs,
   watchApplications,
   watchCheckIns,
   requestCheckIn,
   withdrawCheckIn,
   lastCheckInAt,
-  submitMilestone,
-  decideSubmission,
   addBuildLog,
   markRitual,
   decideApplication,
+  saveTrack,
   getProfile,
 } from "../../../lib/db";
-import { TRACK, squadThreshold } from "../../../lib/milestones";
-import { isoWeek } from "../../../lib/gamify";
-import {
-  DECLINE_LABELS,
-  CHECKIN_NOTE_MAX,
-  CHECKIN_NUDGE_WEEKS,
-} from "../../../lib/types";
+import { isoWeek } from "../../../lib/streaks";
+import { DECLINE_LABELS, CHECKIN_NOTE_MAX, CHECKIN_NUDGE_WEEKS } from "../../../lib/types";
 import { Avatar, AvStack, CheckIcon, FlameIcon } from "../../../components/ui";
 import { ProfileModal } from "../../../components/ProfileModal";
+import { TrackView, TrackEditor, trackProgress } from "../../../components/Track";
 import type {
   Cohort,
   CohortApplication,
-  MilestoneSubmission,
   BuildLog,
   CheckIn,
   Profile,
@@ -60,7 +53,6 @@ export default function CohortPage({ params }: { params: Promise<{ id: string }>
   const router = useRouter();
 
   const [cohort, setCohort] = useState<Cohort | null | undefined>(undefined);
-  const [subs, setSubs] = useState<MilestoneSubmission[]>([]);
   const [logs, setLogs] = useState<BuildLog[]>([]);
   const [apps, setApps] = useState<CohortApplication[]>([]);
   const [checkIns, setCheckIns] = useState<CheckIn[]>([]);
@@ -69,21 +61,10 @@ export default function CohortPage({ params }: { params: Promise<{ id: string }>
   const [asking, setAsking] = useState(false);
   const [askNote, setAskNote] = useState("");
 
-  // Applicant profile viewer (founder reviewing an application). The
-  // application carries the squad-specific weekly hours, so we keep it
-  // alongside the public profile while the modal is open.
+  // Applicant profile viewer (founder reviewing an application).
   const [viewing, setViewing] = useState<Profile | null>(null);
   const [viewingApp, setViewingApp] = useState<CohortApplication | null>(null);
   const [declining, setDeclining] = useState<string | null>(null);
-
-  // Milestone the operator is submitting evidence for
-  const [submitFor, setSubmitFor] = useState<number | null>(null);
-  const [evidenceUrl, setEvidenceUrl] = useState("");
-  const [note, setNote] = useState("");
-
-  // Verification: return-with-reason editor (keyed by submission doc key)
-  const [returning, setReturning] = useState<string | null>(null);
-  const [returnReason, setReturnReason] = useState("");
 
   // Build log composer
   const [logText, setLogText] = useState("");
@@ -94,9 +75,9 @@ export default function CohortPage({ params }: { params: Promise<{ id: string }>
 
   const isMember = !!(user && cohort && cohort.memberUids.includes(user.uid));
   const isFounder = !!(user && cohort && cohort.founderUid === user.uid);
-  const isPeerLead = !!(user && cohort && cohort.peerLeadUid === user.uid);
   const isMentor = profile?.role === "mentor";
-  /** This squad's own mentor — the only one who can take its check-ins. */
+  /** This squad's own mentor — the only one who writes its track and takes
+   *  its check-ins. */
   const isOurMentor = !!(user && cohort && cohort.mentorUid === user.uid);
 
   useEffect(() => {
@@ -107,11 +88,6 @@ export default function CohortPage({ params }: { params: Promise<{ id: string }>
     if (!user) return;
     return watchCohort(id, setCohort);
   }, [user, id]);
-
-  useEffect(() => {
-    if (!isMember && !isMentor) return;
-    return watchSubmissions(id, setSubs);
-  }, [isMember, isMentor, id]);
 
   useEffect(() => {
     if (!isMember && !isMentor) return;
@@ -129,48 +105,19 @@ export default function CohortPage({ params }: { params: Promise<{ id: string }>
     return watchCheckIns(id, setCheckIns);
   }, [isMember, isOurMentor, id]);
 
-  const byMilestone = useMemo(() => {
-    const map = new Map<number, MilestoneSubmission[]>();
-    for (const s of subs) {
-      const list = map.get(s.milestoneId) ?? [];
-      list.push(s);
-      map.set(s.milestoneId, list);
-    }
-    return map;
-  }, [subs]);
-
-  /** The squad's current milestone: first one not yet squad-complete. */
-  const currentMilestoneId = useMemo(() => {
-    if (!cohort) return 1;
-    const threshold = squadThreshold(cohort.memberUids.length);
-    for (const m of TRACK) {
-      const verified = (byMilestone.get(m.id) ?? []).filter(
-        (s) => s.status === "verified"
-      ).length;
-      if (verified < threshold) return m.id;
-    }
-    return TRACK.length;
-  }, [cohort, byMilestone]);
-
   const ritualDone = cohort?.lastRitualWeek === isoWeek();
 
   /* ---- Check-ins: what's outstanding, what's booked, how stale ---- */
   const pendingCheckIn = checkIns.find((c) => c.status === "requested") ?? null;
   const upcomingCheckIn =
     checkIns
-      .filter(
-        (c) =>
-          c.status === "confirmed" && c.startsAt && c.startsAt.toDate().getTime() > now
-      )
-      .sort((a, b) => a.startsAt!.toDate().getTime() - b.startsAt!.toDate().getTime())[0] ??
-    null;
+      .filter((c) => c.status === "confirmed" && c.startsAt && c.startsAt.toDate().getTime() > now)
+      .sort((a, b) => a.startsAt!.toDate().getTime() - b.startsAt!.toDate().getTime())[0] ?? null;
   const lastCheckIn = lastCheckInAt(checkIns, now);
   const staleWeeks = lastCheckIn ? weeksAgo(lastCheckIn, now) : null;
   // Nudge only — nothing is blocked or docked for going quiet.
   const nudge =
-    !pendingCheckIn &&
-    !upcomingCheckIn &&
-    (staleWeeks === null || staleWeeks >= CHECKIN_NUDGE_WEEKS);
+    !pendingCheckIn && !upcomingCheckIn && (staleWeeks === null || staleWeeks >= CHECKIN_NUDGE_WEEKS);
 
   async function sendCheckInRequest() {
     if (!profile || !cohort) return;
@@ -179,37 +126,6 @@ export default function CohortPage({ params }: { params: Promise<{ id: string }>
       await requestCheckIn(cohort, profile, askNote.trim());
       setAsking(false);
       setAskNote("");
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function sendSubmission(milestoneId: number) {
-    if (!profile || !evidenceUrl.trim()) return;
-    setBusy(true);
-    try {
-      await submitMilestone(id, profile, milestoneId, evidenceUrl.trim(), note.trim());
-      setSubmitFor(null);
-      setEvidenceUrl("");
-      setNote("");
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function decide(sub: MilestoneSubmission, verdict: "verified" | "returned") {
-    if (!profile) return;
-    setBusy(true);
-    try {
-      await decideSubmission(
-        id,
-        sub,
-        profile,
-        verdict,
-        verdict === "returned" ? returnReason.trim() : null
-      );
-      setReturning(null);
-      setReturnReason("");
     } finally {
       setBusy(false);
     }
@@ -241,8 +157,8 @@ export default function CohortPage({ params }: { params: Promise<{ id: string }>
     );
   }
 
-  const threshold = squadThreshold(cohort.memberUids.length);
   const consentPending = profile?.consentStatus === "pending";
+  const progress = trackProgress(cohort.track);
 
   return (
     <div className="screen">
@@ -265,9 +181,7 @@ export default function CohortPage({ params }: { params: Promise<{ id: string }>
           <div style={{ display: "flex", alignItems: "center", gap: 12, marginTop: 10, flexWrap: "wrap" }}>
             <AvStack
               names={cohort.memberUids.map(
-                (uid) =>
-                  (cohort.memberNames[uid] ?? "?") +
-                  (uid === cohort.peerLeadUid ? " (lead)" : "")
+                (uid) => (cohort.memberNames[uid] ?? "?") + (uid === cohort.founderUid ? " (founder)" : "")
               )}
             />
             <span className="micro">
@@ -281,12 +195,7 @@ export default function CohortPage({ params }: { params: Promise<{ id: string }>
               <span className="chip chip--want">Awaiting mentor</span>
             )}
             {cohort.link && (
-              <a
-                className="micro sq__link"
-                href={cohort.link}
-                target="_blank"
-                rel="noopener noreferrer"
-              >
+              <a className="micro sq__link" href={cohort.link} target="_blank" rel="noopener noreferrer">
                 Visit site ↗
               </a>
             )}
@@ -300,10 +209,11 @@ export default function CohortPage({ params }: { params: Promise<{ id: string }>
           ) : (
             <button
               className="btn btn--verify"
-              disabled={busy || !profile}
+              disabled={busy || !profile || consentPending}
               onClick={() => profile && markRitual(cohort, profile)}
+              title="Mark this week's ritual held"
             >
-              We met <span className="num">+25</span>
+              We met
             </button>
           ))}
       </header>
@@ -317,211 +227,21 @@ export default function CohortPage({ params }: { params: Promise<{ id: string }>
         </div>
       ) : (
         <div className="grid2 grid2--wide">
-          {/* ---- The quest path ---- */}
+          {/* ---- The track ---- */}
           <section className="tile">
             <div className="tile__head">
-              <h2 className="h3">The Track</h2>
-              <span className="path__count">
-                clears at {threshold}/{cohort.memberUids.length}
-              </span>
+              <h2 className="h3">The track</h2>
+              {progress.total > 0 && (
+                <span className="path__count">
+                  {progress.done}/{progress.total} done
+                </span>
+              )}
             </div>
-
-            <div className="path">
-              {TRACK.map((m) => {
-                const mySub = subs.find(
-                  (s) => s.milestoneId === m.id && s.uid === user.uid
-                );
-                const all = byMilestone.get(m.id) ?? [];
-                const verified = all.filter((s) => s.status === "verified").length;
-                const squadDone = verified >= threshold;
-                const isCurrent = m.id === currentMilestoneId;
-                const canIVerify =
-                  (m.verifier === "peer_lead" && (isPeerLead || isMentor)) ||
-                  (m.verifier === "mentor" && isMentor);
-                const queue = all.filter((s) => s.status === "submitted");
-                const state = squadDone ? "done" : isCurrent ? "active" : "locked";
-
-                return (
-                  <div key={m.id} className={`path__item ${state}`}>
-                    <span className="path__node">
-                      {squadDone ? <CheckIcon size={18} /> : m.id}
-                    </span>
-                    <div className="path__body">
-                      <div className="path__top">
-                        <span className="path__name">{m.name}</span>
-                        <div className="path__meta">
-                          {/* XP is what an operator earns here. A mentor is
-                              paying it out, and the Verify button already
-                              says how much. */}
-                          {isMember && <span className="xp">+{m.xp}</span>}
-                          <span className="path__count">
-                            {verified}/{cohort.memberUids.length}
-                          </span>
-                        </div>
-                      </div>
-
-                      {(isCurrent || mySub) && (
-                        <div className="path__detail">
-                          <p className="path__evidence">
-                            <b>Proof:</b> {m.evidence}{" "}
-                            <span className="muted">(~{m.effort})</span>
-                          </p>
-
-                          {/* My state on this milestone */}
-                          {isMember && (
-                            <>
-                              {mySub?.status === "verified" && (
-                                <span className="path__state path__state--ok pop">
-                                  <CheckIcon size={12} /> Verified by {mySub.verifierName}
-                                </span>
-                              )}
-                              {mySub?.status === "submitted" && (
-                                <span className="path__state">
-                                  In review — {m.verifier === "peer_lead" ? "peer lead" : "mentor"}
-                                </span>
-                              )}
-                              {mySub?.status === "returned" && (
-                                <>
-                                  <span className="path__state path__state--warn">
-                                    Returned: {mySub.returnReason}
-                                  </span>
-                                  {submitFor !== m.id && (
-                                    <button
-                                      className="btn btn--ghost btn--sm"
-                                      onClick={() => {
-                                        setSubmitFor(m.id);
-                                        setEvidenceUrl(mySub.evidenceUrl);
-                                        setNote(mySub.note);
-                                      }}
-                                    >
-                                      Fix &amp; resend
-                                    </button>
-                                  )}
-                                </>
-                              )}
-                              {!mySub && isCurrent && submitFor !== m.id && (
-                                <button
-                                  className="btn btn--primary btn--sm"
-                                  disabled={consentPending}
-                                  onClick={() => {
-                                    setSubmitFor(m.id);
-                                    setEvidenceUrl("");
-                                    setNote("");
-                                  }}
-                                >
-                                  Submit proof
-                                </button>
-                              )}
-                              {submitFor === m.id && (
-                                <div className="path__form">
-                                  <input
-                                    className="input"
-                                    autoFocus
-                                    value={evidenceUrl}
-                                    onChange={(e) => setEvidenceUrl(e.target.value)}
-                                    placeholder="Link your proof"
-                                    maxLength={500}
-                                  />
-                                  <textarea
-                                    className="input"
-                                    value={note}
-                                    onChange={(e) => setNote(e.target.value)}
-                                    placeholder="What should they look at?"
-                                    maxLength={500}
-                                  />
-                                  <div className="row-actions" style={{ marginTop: 0 }}>
-                                    <button
-                                      className="btn btn--ghost btn--sm"
-                                      onClick={() => setSubmitFor(null)}
-                                    >
-                                      Cancel
-                                    </button>
-                                    <button
-                                      className="btn btn--primary btn--sm"
-                                      disabled={busy || !evidenceUrl.trim()}
-                                      onClick={() => sendSubmission(m.id)}
-                                    >
-                                      {busy ? "…" : "Send"}
-                                    </button>
-                                  </div>
-                                </div>
-                              )}
-                            </>
-                          )}
-
-                          {/* Verification queue for whoever can verify */}
-                          {canIVerify && queue.length > 0 && (
-                            <div className="path__queue">
-                              {queue.map((s) => {
-                                const key = `${s.milestoneId}_${s.uid}`;
-                                return (
-                                  <div key={key} className="path__queue-row">
-                                    <div className="path__queue-who">
-                                      <Avatar name={s.name} size="sm" />
-                                      {s.name}
-                                      <a href={s.evidenceUrl} target="_blank" rel="noreferrer">
-                                        proof
-                                      </a>
-                                    </div>
-                                    {s.note && <p className="path__queue-note">{s.note}</p>}
-                                    {returning === key ? (
-                                      <div className="path__form">
-                                        <input
-                                          className="input"
-                                          autoFocus
-                                          value={returnReason}
-                                          onChange={(e) => setReturnReason(e.target.value)}
-                                          placeholder="What's missing, specifically?"
-                                          maxLength={300}
-                                        />
-                                        <div className="row-actions" style={{ marginTop: 0 }}>
-                                          <button
-                                            className="btn btn--ghost btn--sm"
-                                            onClick={() => setReturning(null)}
-                                          >
-                                            Cancel
-                                          </button>
-                                          <button
-                                            className="btn btn--ink btn--sm"
-                                            disabled={busy || !returnReason.trim()}
-                                            onClick={() => decide(s, "returned")}
-                                          >
-                                            Return
-                                          </button>
-                                        </div>
-                                      </div>
-                                    ) : (
-                                      <div className="row-actions" style={{ marginTop: 0 }}>
-                                        <button
-                                          className="btn btn--verify btn--sm"
-                                          disabled={busy}
-                                          onClick={() => decide(s, "verified")}
-                                        >
-                                          Verify <span className="num">+{m.xp}</span>
-                                        </button>
-                                        <button
-                                          className="btn btn--ghost btn--sm"
-                                          onClick={() => {
-                                            setReturning(key);
-                                            setReturnReason("");
-                                          }}
-                                        >
-                                          Return
-                                        </button>
-                                      </div>
-                                    )}
-                                  </div>
-                                );
-                              })}
-                            </div>
-                          )}
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
+            {isOurMentor ? (
+              <TrackEditor track={cohort.track} onSave={(t) => saveTrack(cohort.id, t)} />
+            ) : (
+              <TrackView track={cohort.track} mentorName={cohort.mentorName} />
+            )}
           </section>
 
           <div className="stack">
@@ -531,9 +251,7 @@ export default function CohortPage({ params }: { params: Promise<{ id: string }>
                 <div className="tile__head">
                   <h2 className="h3">Mentor check-in</h2>
                   {lastCheckIn ? (
-                    <span className="micro">
-                      {staleWeeks === 0 ? "this week" : `${staleWeeks}w ago`}
-                    </span>
+                    <span className="micro">{staleWeeks === 0 ? "this week" : `${staleWeeks}w ago`}</span>
                   ) : (
                     <span className="micro">none yet</span>
                   )}
@@ -548,21 +266,15 @@ export default function CohortPage({ params }: { params: Promise<{ id: string }>
                     {upcomingCheckIn && (
                       <div className="ses">
                         <div className="ses__body">
-                          <span className="ses__title">
-                            {fmtWhen(upcomingCheckIn.startsAt!.toDate())}
-                          </span>
+                          <span className="ses__title">{fmtWhen(upcomingCheckIn.startsAt!.toDate())}</span>
                           <span className="ses__meta">
                             {upcomingCheckIn.mentorName} · {upcomingCheckIn.durationMins}m
+                            {upcomingCheckIn.calendarEventId && " · on your calendar"}
                           </span>
                         </div>
                         {upcomingCheckIn.meetLink && (
                           <div className="ses__act">
-                            <a
-                              className="btn btn--primary btn--sm"
-                              href={upcomingCheckIn.meetLink}
-                              target="_blank"
-                              rel="noreferrer"
-                            >
+                            <a className="btn btn--primary btn--sm" href={upcomingCheckIn.meetLink} target="_blank" rel="noreferrer">
                               Join
                             </a>
                           </div>
@@ -574,23 +286,24 @@ export default function CohortPage({ params }: { params: Promise<{ id: string }>
                       <div className="ses">
                         <div className="ses__body">
                           <span className="ses__title">Waiting on a time</span>
-                          <span className="ses__meta">
-                            asked by {pendingCheckIn.requestedByName}
-                          </span>
-                          {pendingCheckIn.note && (
-                            <p className="path__queue-note">{pendingCheckIn.note}</p>
-                          )}
+                          <span className="ses__meta">asked by {pendingCheckIn.requestedByName}</span>
+                          {pendingCheckIn.note && <p className="path__queue-note">{pendingCheckIn.note}</p>}
                         </div>
                         {pendingCheckIn.requestedByUid === user.uid && (
                           <div className="ses__act">
                             <button
                               className="btn btn--ghost btn--sm"
-                              onClick={() =>
-                                withdrawCheckIn(id, pendingCheckIn.id).catch(() => {})
-                              }
+                              onClick={() => withdrawCheckIn(id, pendingCheckIn.id).catch(() => {})}
                             >
                               Cancel
                             </button>
+                          </div>
+                        )}
+                        {isOurMentor && (
+                          <div className="ses__act">
+                            <Link className="btn btn--verify btn--sm" href="/mentor/squads">
+                              Set a time
+                            </Link>
                           </div>
                         )}
                       </div>
@@ -600,9 +313,7 @@ export default function CohortPage({ params }: { params: Promise<{ id: string }>
                       <>
                         {nudge && (
                           <p className="micro" style={{ marginBottom: 10 }}>
-                            {lastCheckIn
-                              ? `Last one ${staleWeeks} weeks ago.`
-                              : "Never met your mentor."}
+                            {lastCheckIn ? `Last one ${staleWeeks} weeks ago.` : "Never met your mentor."}
                           </p>
                         )}
                         <button
@@ -629,17 +340,10 @@ export default function CohortPage({ params }: { params: Promise<{ id: string }>
                           maxLength={CHECKIN_NOTE_MAX}
                         />
                         <div className="row-actions" style={{ marginTop: 0 }}>
-                          <button
-                            className="btn btn--ghost btn--sm"
-                            onClick={() => setAsking(false)}
-                          >
+                          <button className="btn btn--ghost btn--sm" onClick={() => setAsking(false)}>
                             Cancel
                           </button>
-                          <button
-                            className="btn btn--primary btn--sm"
-                            disabled={busy}
-                            onClick={sendCheckInRequest}
-                          >
+                          <button className="btn btn--primary btn--sm" disabled={busy} onClick={sendCheckInRequest}>
                             {busy ? "…" : "Send"}
                           </button>
                         </div>
@@ -660,7 +364,7 @@ export default function CohortPage({ params }: { params: Promise<{ id: string }>
             <section className="tile">
               <div className="tile__head">
                 <h2 className="h3">Build log</h2>
-                {isMember && <span className="xp">+10/day</span>}
+                {isMember && <span className="micro">one line a day</span>}
               </div>
               {isMember && (
                 <div className="composer">
@@ -673,11 +377,7 @@ export default function CohortPage({ params }: { params: Promise<{ id: string }>
                     maxLength={300}
                     disabled={consentPending}
                   />
-                  <button
-                    className="btn btn--primary"
-                    disabled={busy || !logText.trim() || consentPending}
-                    onClick={postLog}
-                  >
+                  <button className="btn btn--primary" disabled={busy || !logText.trim() || consentPending} onClick={postLog}>
                     Ship
                   </button>
                 </div>
@@ -753,10 +453,7 @@ export default function CohortPage({ params }: { params: Promise<{ id: string }>
                             >
                               Accept
                             </button>
-                            <button
-                              className="btn btn--ghost btn--sm"
-                              onClick={() => setDeclining(a.applicantUid)}
-                            >
+                            <button className="btn btn--ghost btn--sm" onClick={() => setDeclining(a.applicantUid)}>
                               Decline
                             </button>
                           </div>

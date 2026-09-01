@@ -9,9 +9,13 @@ import {
   useConsentQueue,
 } from "../../components/mentorData";
 import { watchMyUpcomingWorkshops } from "../../lib/db";
+import { createWorkshop } from "../../lib/api";
 import { workshopSpots } from "../../lib/types";
 import type { Workshop } from "../../lib/types";
-import { AvStack } from "../../components/ui";
+import { AvStack, PlusIcon } from "../../components/ui";
+import { CalendarConnect, useCalendarStatus } from "../../components/CalendarConnect";
+import { WorkshopForm, blankDraft, draftToWire, type Draft } from "../../components/WorkshopForm";
+import { trackProgress } from "../../components/Track";
 
 /** One thing on the calendar, whatever kind it is. */
 interface Upcoming {
@@ -37,12 +41,18 @@ export default function MentorHomePage() {
   const { user, profile } = useMentorGate();
   const uid = user?.uid ?? null;
 
-  const { mine, loading, requests, verifyQueue, upcomingCheckIns } =
-    useMentoredSquads(uid);
+  const { mine, loading, requests, upcomingCheckIns, needsTrack } = useMentoredSquads(uid);
   const { squads: unassigned } = useUnassignedSquads(!!uid);
   const { pending } = useConsentQueue(!!uid);
+  const { status: calendar } = useCalendarStatus();
 
   const [sessions, setSessions] = useState<Workshop[]>([]);
+
+  // The new-session composer, right here on the home screen.
+  const [draft, setDraft] = useState<Draft | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [flash, setFlash] = useState("");
+  const [error, setError] = useState("");
 
   useEffect(() => {
     if (!uid) return;
@@ -59,9 +69,7 @@ export default function MentorHomePage() {
         when: w.startsAt.toDate(),
         title: w.title,
         meta: `${w.durationMins}m · ${
-          seats.capacity === null
-            ? `${seats.taken} enrolled`
-            : `${seats.taken}/${seats.capacity} seats`
+          seats.capacity === null ? `${seats.taken} enrolled` : `${seats.taken}/${seats.capacity} seats`
         }`,
         href: "/mentor/workshops",
         meetLink: w.meetLink,
@@ -80,6 +88,26 @@ export default function MentorHomePage() {
       .slice(0, 6);
   }, [sessions, upcomingCheckIns]);
 
+  async function schedule() {
+    if (!draft) return;
+    setBusy(true);
+    setError("");
+    try {
+      const { calendar: linked } = await createWorkshop(draftToWire(draft));
+      setDraft(null);
+      setFlash(
+        linked === "linked"
+          ? "Scheduled. It's on your Google Calendar with a Meet room."
+          : "Scheduled."
+      );
+      setTimeout(() => setFlash(""), 4000);
+    } catch {
+      setError("Couldn't schedule that. Try again.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
   if (!user || !profile) return null;
 
   const first = profile.name.split(" ")[0];
@@ -88,9 +116,9 @@ export default function MentorHomePage() {
    *  row is a thing to read, and a mentor's home should only carry work. */
   const queues = [
     {
-      n: verifyQueue.length,
-      label: verifyQueue.length === 1 ? "proof to verify" : "proofs to verify",
-      href: "/mentor/squads",
+      n: needsTrack.length,
+      label: needsTrack.length === 1 ? "squad needs a track" : "squads need a track",
+      href: needsTrack.length === 1 ? `/cohorts/${needsTrack[0].id}` : "/mentor/squads",
     },
     {
       n: requests.length,
@@ -113,7 +141,32 @@ export default function MentorHomePage() {
     <div className="screen">
       <header className="screen__head">
         <h1 className="h1">Hey, {first}.</h1>
+        {!draft && (
+          <button className="btn btn--primary" onClick={() => setDraft(blankDraft())}>
+            <PlusIcon /> New workshop
+          </button>
+        )}
       </header>
+
+      {draft && (
+        <WorkshopForm
+          draft={draft}
+          setDraft={setDraft}
+          taken={0}
+          onSave={schedule}
+          onCancel={() => setDraft(null)}
+          busy={busy}
+          title="New workshop"
+          calendarLinked={!!calendar?.connected}
+        />
+      )}
+      {error && <p className="form-err">{error}</p>}
+      {flash && <p className="micro signal screen__block">{flash}</p>}
+
+      {/* Calendar: one line when connected, a real prompt when not. */}
+      <section className="screen__block">
+        <CalendarConnect returnTo="/mentor" compact />
+      </section>
 
       <section className="screen__block">
         <div className="screen__label">
@@ -142,16 +195,14 @@ export default function MentorHomePage() {
             </Link>
           </div>
           {upcoming.length === 0 ? (
-            <p className="empty">Nothing booked. Schedule a session.</p>
+            <p className="empty">Nothing booked. Schedule a workshop above.</p>
           ) : (
             <div>
               {upcoming.map((u) => (
                 <div key={u.key} className="ses">
                   <div className="ses__date">
                     <b>{u.when.getDate()}</b>
-                    <span>
-                      {u.when.toLocaleDateString(undefined, { month: "short" })}
-                    </span>
+                    <span>{u.when.toLocaleDateString(undefined, { month: "short" })}</span>
                   </div>
                   <div className="ses__body">
                     <span className="ses__title">{u.title}</span>
@@ -161,12 +212,7 @@ export default function MentorHomePage() {
                   </div>
                   <div className="ses__act">
                     {u.meetLink ? (
-                      <a
-                        className="btn btn--primary btn--sm"
-                        href={u.meetLink}
-                        target="_blank"
-                        rel="noreferrer"
-                      >
+                      <a className="btn btn--primary btn--sm" href={u.meetLink} target="_blank" rel="noreferrer">
                         Join
                       </a>
                     ) : (
@@ -194,15 +240,20 @@ export default function MentorHomePage() {
             <p className="empty">None yet — take one on.</p>
           ) : (
             <div className="stack" style={{ gap: 12 }}>
-              {mine.map((c) => (
-                <Link key={c.id} href={`/cohorts/${c.id}`} className="mrow">
-                  <span className="mrow__name">{c.name}</span>
-                  <AvStack
-                    names={c.memberUids.map((u) => c.memberNames[u] ?? "?")}
-                    max={4}
-                  />
-                </Link>
-              ))}
+              {mine.map((c) => {
+                const p = trackProgress(c.track);
+                return (
+                  <Link key={c.id} href={`/cohorts/${c.id}`} className="mrow">
+                    <span className="mrow__name">
+                      {c.name}
+                      <span className="micro" style={{ marginLeft: 8 }}>
+                        {p.total === 0 ? "no track yet" : `${p.done}/${p.total}`}
+                      </span>
+                    </span>
+                    <AvStack names={c.memberUids.map((u) => c.memberNames[u] ?? "?")} max={4} />
+                  </Link>
+                );
+              })}
             </div>
           )}
         </section>

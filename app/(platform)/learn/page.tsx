@@ -3,13 +3,8 @@
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { useAuth } from "../../components/AuthProvider";
-import {
-  getUpcomingWorkshops,
-  getPastWorkshops,
-  enrollWorkshop,
-  markAttended,
-} from "../../lib/db";
-import { TRACK } from "../../lib/milestones";
+import { getUpcomingWorkshops, getPastWorkshops } from "../../lib/db";
+import { enrollWorkshop, leaveWorkshop } from "../../lib/api";
 import type { Workshop } from "../../lib/types";
 import { WorkshopList } from "../../components/WorkshopList";
 
@@ -19,7 +14,6 @@ export default function LearnPage() {
 
   const [workshops, setWorkshops] = useState<Workshop[] | null>(null);
   const [recordings, setRecordings] = useState<Workshop[]>([]);
-  // Seat feedback when someone loses the race for the last spot.
   const [seatErr, setSeatErr] = useState("");
 
   useEffect(() => {
@@ -29,10 +23,13 @@ export default function LearnPage() {
     else if (profile?.role === "mentor") router.replace("/mentor/workshops");
   }, [user, profile, router]);
 
-  useEffect(() => {
-    if (!user) return;
+  function load() {
     getUpcomingWorkshops().then(setWorkshops).catch(() => setWorkshops([]));
     getPastWorkshops().then(setRecordings).catch(() => setRecordings([]));
+  }
+
+  useEffect(() => {
+    if (user) load();
   }, [user]);
 
   /** Claim a seat, then reflect it locally — the catalog is fetched once, not
@@ -42,23 +39,36 @@ export default function LearnPage() {
     if (!profile) return;
     setSeatErr("");
     try {
-      const result = await enrollWorkshop(profile.uid, w.id);
+      const result = await enrollWorkshop(w.id);
       if (result === "full") {
         setSeatErr(`"${w.title}" just filled up.`);
-        // Pull the real roster so the row shows Full instead of inviting
-        // another click that can only fail.
-        getUpcomingWorkshops().then(setWorkshops).catch(() => {});
+        load();
         return;
       }
       setWorkshops((prev) =>
         (prev ?? []).map((x) =>
-          x.id === w.id
-            ? { ...x, enrolledUids: [...(x.enrolledUids ?? []), profile.uid] }
-            : x
+          x.id === w.id ? { ...x, enrolledUids: [...(x.enrolledUids ?? []), profile.uid] } : x
         )
       );
     } catch {
       setSeatErr("Couldn't get you in. Try again.");
+    }
+  }
+
+  async function leave(w: Workshop) {
+    if (!profile) return;
+    setSeatErr("");
+    try {
+      await leaveWorkshop(w.id);
+      setWorkshops((prev) =>
+        (prev ?? []).map((x) =>
+          x.id === w.id
+            ? { ...x, enrolledUids: (x.enrolledUids ?? []).filter((u) => u !== profile.uid) }
+            : x
+        )
+      );
+    } catch {
+      setSeatErr("Couldn't give the seat back. Try again.");
     }
   }
 
@@ -68,7 +78,7 @@ export default function LearnPage() {
     <div className="screen">
       <header className="screen__head">
         <h1 className="h1">Learn</h1>
-        <span className="xp">live = +50</span>
+        <span className="micro">live sessions with mentors</span>
       </header>
 
       <section className="tile screen__block">
@@ -78,14 +88,9 @@ export default function LearnPage() {
         {workshops === null ? (
           <p className="empty">Loading…</p>
         ) : workshops.length === 0 ? (
-          <p className="empty">Nothing scheduled.</p>
+          <p className="empty">Nothing scheduled yet.</p>
         ) : (
-          <WorkshopList
-            workshops={workshops}
-            profile={profile}
-            onEnroll={enroll}
-            onAttend={(w) => markAttended(profile, w).catch(() => {})}
-          />
+          <WorkshopList workshops={workshops} profile={profile} onEnroll={enroll} onLeave={leave} />
         )}
         {seatErr && <p className="form-err">{seatErr}</p>}
       </section>
@@ -109,12 +114,7 @@ export default function LearnPage() {
                     <span className="ses__meta">{w.mentorName}</span>
                   </div>
                   <div className="ses__act">
-                    <a
-                      className="btn btn--ghost btn--sm"
-                      href={w.recordingUrl}
-                      target="_blank"
-                      rel="noreferrer"
-                    >
+                    <a className="btn btn--ghost btn--sm" href={w.recordingUrl} target="_blank" rel="noreferrer">
                       Watch
                     </a>
                   </div>
@@ -124,37 +124,6 @@ export default function LearnPage() {
           </div>
         </section>
       )}
-
-      <section className="tile screen__block">
-        <div className="tile__head">
-          <h2 className="h3">The season</h2>
-          <span className="path__count">8 weeks · 7 milestones</span>
-        </div>
-        <div className="path">
-          {TRACK.map((m) => {
-            const linked = (workshops ?? []).find((w) => w.milestoneId === m.id);
-            return (
-              <div key={m.id} className="path__item">
-                <span className="path__node">{m.id}</span>
-                <div className="path__body">
-                  <div className="path__top">
-                    <span className="path__name">{m.name}</span>
-                    <div className="path__meta">
-                      <span className="xp">+{m.xp}</span>
-                      <span className="path__count">{m.week}</span>
-                    </div>
-                  </div>
-                  {linked && (
-                    <span className="micro" style={{ display: "block", marginTop: 4 }}>
-                      ⚡ {linked.title} · {linked.mentorName}
-                    </span>
-                  )}
-                </div>
-              </div>
-            );
-          })}
-        </div>
-      </section>
     </div>
   );
 }

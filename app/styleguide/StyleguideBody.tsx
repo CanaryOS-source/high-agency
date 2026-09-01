@@ -9,7 +9,6 @@ import {
   Bar,
   CheckIcon,
   FlameIcon,
-  LevelRing,
   LockIcon,
 } from "../components/ui";
 
@@ -99,15 +98,12 @@ export function StyleguideBody() {
           <span className="hud__stat">
             <FlameIcon size={15} /> 12
           </span>
-          <LevelRing xp={480} />
-          <span className="badge badge--level">L2 Builder</span>
           <span className="badge badge--earned">
-            <CheckIcon size={11} /> verified
+            <CheckIcon size={11} /> done
           </span>
           <span className="badge badge--locked">
-            <LockIcon /> L3
+            <LockIcon /> full
           </span>
-          <span className="xp">+150</span>
         </div>
       </section>
 
@@ -118,7 +114,7 @@ export function StyleguideBody() {
           <div className="tile">
             <div className="tile__head">
               <span className="h3">Resting tile</span>
-              <span className="xp">+10</span>
+              <span className="micro">today</span>
             </div>
             <Bar value={0.6} />
           </div>
@@ -163,15 +159,14 @@ export function StyleguideBody() {
                 <div className="path__top">
                   <span className="path__name">20 asks out</span>
                   <div className="path__meta">
-                    <span className="xp">+150</span>
-                    <span className="path__count">2/6</span>
+                    <span className="path__count">due Fri</span>
                   </div>
                 </div>
                 <div className="path__detail">
                   <p className="path__evidence">
-                    <b>Proof:</b> 20 sent messages + 1 reply.
+                    Twenty sent messages and at least one reply.
                   </p>
-                  <button className="btn btn--primary btn--sm">Submit proof</button>
+                  <button className="btn btn--verify btn--sm">Mark done</button>
                 </div>
               </div>
             </div>
