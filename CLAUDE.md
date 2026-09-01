@@ -278,7 +278,8 @@ signup**, one read to resolve an incoming `?ref=`, one read to render the share 
   `seed.js` (squads, profiles, workshops, build logs — the Learn page's content is these
   workshops), `admin-set.js` (`<uid> consent|mentor|pro`), `mentor-invite.js` (mint a
   single-use mentor invite link), `approve.js` (add/remove a founding-batch allowlist
-  entry), `cleanup-test.js`, `test-applicant.js` (exercises the
+  entry), `cleanup-test.js`, `qa-setup.js` (local E2E QA fixture + sign-in links —
+  see [`docs/qa-e2e.md`](docs/qa-e2e.md)), `test-applicant.js` (exercises the
   security rules as a real client), `fb-token.js` (token helper). There is no
   `seed-courses.js`.
 - `firestore.rules` — the enforcement backend. `design-system.md` — visual SoT (read before
@@ -328,6 +329,7 @@ node scripts/mentor-invite.js "<label>" 30  # mint a single-use mentor invite li
 node scripts/approve.js <email> mentor      # founding-batch allowlist (also: operator | --remove)
 node scripts/staff-referrals.js             # staff lead-source codes: DRY RUN (add --apply, --json)
 node scripts/cleanup-test.js <cohortId>     # remove smoke-test artifacts
+node scripts/qa-setup.js [--link mentor]   # local QA fixture + sign-in links (see docs/qa-e2e.md)
 
 # Tests (wrap the Firestore emulator; pinned firebase-tools@13 devDep):
 npm test              # rules + referral + consent + mentor-invite + hubspot + staff-code suites

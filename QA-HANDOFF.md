@@ -125,6 +125,10 @@ intended way to test the flow locally. Look for:
 
 Paste that URL into the browser to complete sign-in.
 
+For the repeatable two-account setup (QA operator + QA mentor sharing one squad,
+two browser origins, `node scripts/qa-setup.js --link mentor` to mint a link without
+email) see [`docs/qa-e2e.md`](docs/qa-e2e.md).
+
 > **Heads-up: every environment writes to the same live Firestore project
 > (`highagency-62e67`).** There is no staging database. Whatever Josh creates —
 > accounts, squads, workshops, build logs — is real data in the real project.
