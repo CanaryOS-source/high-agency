@@ -133,8 +133,9 @@ that used to gate workshops was removed in September 2026 — don't reintroduce 
   they get reminders and the mentor sees who's coming, but operators never see each other's
   emails. Unconnected mentors paste a link instead — nothing breaks without Google.
   Env: `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `GOOGLE_TOKEN_KEY` (32 bytes hex).
-- **Direction of travel:** the remaining client-trusted mechanic is the streak (see
-  Gotchas); it's the natural next thing to move server-side.
+- **Nothing game-related is client-trusted any more.** The streak moved server-side in
+  September 2026 (see Domain model → Streaks). What the browser still writes directly is
+  squad membership data the rules can fully validate.
 - **Mentors get their own app, not the operator app plus an admin tab.** There is no `/admin`
   route. `role == "mentor"` swaps the entire shell: the rail becomes **Home · Workshops ·
   Squads · You** (`app/(platform)/mentor/**`), the streak HUD is hidden, and every operator
@@ -199,11 +200,14 @@ Types live in [`app/lib/types.ts`](app/lib/types.ts); data access in
   mentor: any member requests one, the mentor confirms it via `POST /api/checkins/confirm`,
   which creates the Calendar event + Meet room with the whole squad invited (or takes a
   pasted link when the mentor isn't connected). Readable by that squad and that mentor only.
-- **Streaks** (`app/lib/streaks.ts`) — the only game mechanic. A personal daily streak kept
-  alive by qualifying actions (posting a build log, marking the weekly ritual held)
-  with banked freezes (earn 1 per 7-day run, max 3; a freeze covers exactly one missed day),
-  and a squad `weeklyStreak` ticked once per ISO week when any member marks the ritual held.
-  A "day" is the user's **local** day. Client-trusted v1.
+- **Streaks** (`app/lib/streaks.ts` for the math, `app/lib/streakServer.ts` for the
+  writes) — the only game mechanic, and **server-authoritative**. A personal daily streak
+  kept alive by two qualifying actions, each a Route Handler: `POST /api/build-log` and
+  `POST /api/ritual`. Banked freezes (earn 1 per 7-day run, max 3; a freeze covers exactly
+  one missed day). "Today" is computed on the server from the profile's own IANA timezone.
+  The squad `weeklyStreak` ticks once per ISO week from the same ritual route. Rules freeze
+  `streak` / `streakFreezes` / `lastActiveDay` / `lastBuildLogDay` on every client path, deny
+  client build-log creates, and deny client writes to the cohort ritual fields.
 - **Matching** ([`app/lib/match.ts`](app/lib/match.ts)) — tag overlap + timezone band +
   skills-wanted scoring with "why matched" chips. No embeddings yet (deliberate).
 
@@ -389,9 +393,10 @@ Beyond those suites, `scripts/` are manual smoke-test + seed/admin helpers.
 - **Firebase web config keys are public by design** (committed in `app/lib/firebase.ts`);
   security comes from Firestore rules, not from hiding keys. Don't "fix" this by removing
   them. They're overridable via `NEXT_PUBLIC_FIREBASE_*` env vars.
-- **The streak is "client-trusted v1"** — `touchStreak` and the ritual tick are written
-  from the browser and the rules only shape-check them. Intentional shortcut for the
-  founding batch; don't treat it as airtight.
+- **Build logs and the ritual go through the server.** `POST /api/build-log` and
+  `POST /api/ritual` are the only writers of `cohorts/*/logs`, the cohort's
+  `weeklyStreak`/`lastRitualWeek`, and every streak field on a profile. If you add a new
+  qualifying action, add it to `app/lib/streakServer.ts` and reuse `nextStreak()`.
 - **Google Calendar needs three env vars** (`GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`,
   `GOOGLE_TOKEN_KEY`) in the server runtime. Without them `/api/google/status` reports
   `configured: false`, the connect card explains itself, and sessions fall back to a pasted

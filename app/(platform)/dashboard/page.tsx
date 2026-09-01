@@ -4,8 +4,8 @@ import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { useAuth } from "../../components/AuthProvider";
-import { watchMyCohorts, watchBuildLogs, addBuildLog, getUpcomingWorkshops } from "../../lib/db";
-import { enrollWorkshop, leaveWorkshop } from "../../lib/api";
+import { watchMyCohorts, watchBuildLogs, getUpcomingWorkshops } from "../../lib/db";
+import { enrollWorkshop, leaveWorkshop, postBuildLog } from "../../lib/api";
 import { localDay } from "../../lib/streaks";
 import { currentMilestone } from "../../lib/types";
 import type { Cohort, BuildLog, Workshop } from "../../lib/types";
@@ -81,8 +81,10 @@ export default function HomePage() {
     if (!profile || !cohort || !logText.trim()) return;
     setBusy(true);
     try {
-      await addBuildLog(cohort.id, profile, logText.trim());
+      await postBuildLog(cohort.id, logText.trim());
       setLogText("");
+    } catch {
+      /* the composer keeps the text so they can retry */
     } finally {
       setBusy(false);
     }

@@ -12,13 +12,12 @@ import {
   requestCheckIn,
   withdrawCheckIn,
   lastCheckInAt,
-  addBuildLog,
-  markRitual,
   decideApplication,
   saveTrack,
   getProfile,
 } from "../../../lib/db";
 import { isoWeek } from "../../../lib/streaks";
+import { postBuildLog, markRitual } from "../../../lib/api";
 import { DECLINE_LABELS, CHECKIN_NOTE_MAX, CHECKIN_NUDGE_WEEKS } from "../../../lib/types";
 import { Avatar, AvStack, CheckIcon, FlameIcon } from "../../../components/ui";
 import { ProfileModal } from "../../../components/ProfileModal";
@@ -135,8 +134,10 @@ export default function CohortPage({ params }: { params: Promise<{ id: string }>
     if (!profile || !logText.trim()) return;
     setBusy(true);
     try {
-      await addBuildLog(id, profile, logText.trim());
+      await postBuildLog(id, logText.trim());
       setLogText("");
+    } catch {
+      /* keep the text for a retry */
     } finally {
       setBusy(false);
     }
@@ -210,7 +211,7 @@ export default function CohortPage({ params }: { params: Promise<{ id: string }>
             <button
               className="btn btn--verify"
               disabled={busy || !profile || consentPending}
-              onClick={() => profile && markRitual(cohort, profile)}
+              onClick={() => markRitual(cohort.id).catch(() => {})}
               title="Mark this week's ritual held"
             >
               We met

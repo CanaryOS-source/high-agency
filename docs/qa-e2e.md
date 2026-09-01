@@ -92,8 +92,8 @@ per email and per IP (in-process, so a dev-server restart clears it).
 ## What to check after a change
 
 - Operator: `/dashboard` (streak, "Now" from the track, build log, this week's
-  sessions), `/cohorts`, `/cohorts/<qa-squad-id>` (read-only track, build log, ritual,
-  ask for a check-in), `/learn` (enroll / leave), `/profile`.
+  sessions), `/cohorts`, `/cohorts/<qa-squad-id>` (read-only track, build log and ritual — both
+  via server routes, watch the flame move — ask for a check-in), `/learn` (enroll / leave), `/profile`.
 - Mentor: `/mentor` (queues + "New workshop" composer + calendar prompt),
   `/mentor/squads` (check-in requests, "Needs a mentor" feed), `/mentor/workshops`
   (week calendar, edit/delete own), `/mentor/you` (card + Google Calendar connect),

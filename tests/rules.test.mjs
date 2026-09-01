@@ -11,7 +11,7 @@
  *
  * The core claim under test: a minor whose consentStatus is "pending" is
  * DENIED — at the rules level — from every community write (create cohort,
- * apply, post build log, tick the ritual), while a "granted"
+ * apply, request a check-in), while a "granted"
  * operator succeeds at the identical writes. Plus: a pending minor can't
  * self-grant consent, and the consentTokens collection is fully locked to
  * clients.
@@ -269,14 +269,14 @@ test("pending minor is denied: create application", async () => {
   await assertFails(applyToOpenSquad(db, "minor"));
 });
 
-test("pending minor is denied: post build log", async () => {
-  const db = testEnv.authenticatedContext("minor").firestore();
-  await assertFails(postBuildLog(db, "minor"));
+test("STREAK: nobody posts a build log from the browser (server route only)", async () => {
+  await assertFails(postBuildLog(testEnv.authenticatedContext("granted").firestore(), "granted"));
+  await assertFails(postBuildLog(testEnv.authenticatedContext("minor").firestore(), "minor"));
 });
 
-test("pending minor is denied: ritual update", async () => {
-  const db = testEnv.authenticatedContext("minor").firestore();
-  await assertFails(tickRitual(db));
+test("STREAK: nobody ticks the ritual from the browser (server route only)", async () => {
+  await assertFails(tickRitual(testEnv.authenticatedContext("granted").firestore()));
+  await assertFails(tickRitual(testEnv.authenticatedContext("founder").firestore()));
 });
 
 /* ================= granted operator: identical writes SUCCEED ============= */
@@ -291,14 +291,24 @@ test("granted operator is allowed: create application", async () => {
   await assertSucceeds(applyToOpenSquad(db, "granted"));
 });
 
-test("granted operator is allowed: post build log", async () => {
+test("STREAK: an operator cannot raise their own streak", async () => {
   const db = testEnv.authenticatedContext("granted").firestore();
-  await assertSucceeds(postBuildLog(db, "granted"));
+  await assertFails(updateDoc(doc(db, "profiles/granted"), { streak: 400, updatedAt: serverTimestamp() }));
+  await assertFails(updateDoc(doc(db, "profiles/granted"), { streakFreezes: 3, updatedAt: serverTimestamp() }));
+  await assertFails(updateDoc(doc(db, "profiles/granted"), { lastActiveDay: "2026-07-11", updatedAt: serverTimestamp() }));
+  await assertFails(updateDoc(doc(db, "profiles/granted"), { lastBuildLogDay: "2026-07-11", updatedAt: serverTimestamp() }));
 });
 
-test("granted member is allowed: ritual update", async () => {
+test("STREAK: an operator can still edit their card with the streak untouched", async () => {
   const db = testEnv.authenticatedContext("granted").firestore();
-  await assertSucceeds(tickRitual(db));
+  await assertSucceeds(updateDoc(doc(db, "profiles/granted"), { headline: "New line", updatedAt: serverTimestamp() }));
+});
+
+test("STREAK: a new profile cannot start with a banked streak", async () => {
+  const db = testEnv.authenticatedContext("approved", { email: "approved@example.com" }).firestore();
+  await assertFails(setDoc(doc(db, "profiles/approved"), { ...profile("approved", "granted"), streak: 30 }));
+  await assertFails(setDoc(doc(db, "profiles/approved"), { ...profile("approved", "granted"), streakFreezes: 2 }));
+  await assertSucceeds(setDoc(doc(db, "profiles/approved"), profile("approved", "granted")));
 });
 
 /* ================= consent can't be self-granted ========================= */

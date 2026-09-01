@@ -33,21 +33,22 @@ service cloud.firestore {
     //   admin tooling (OAuth bypasses rules) or, for mentors, by the
     //   invite-redemption Route Handler (Admin SDK — /api/mentor/redeem);
     //   clients can't grant themselves either. There is no XP: the streak
-    //   fields are the only game state, owner-written (client-trusted v1).
+    //   fields are the only game state, and they are SERVER-WRITTEN (frozen
+    //   on every client path; see app/lib/streakServer.ts).
     //
     // Collection: privateProfiles/{uid} — DOB, full name, exact city,
     //   parent email. Owner-only, both directions. Never listed.
     //
     // Collection: cohorts/{id} — accountability squads (3–8 operators).
-    //   Founder manages the doc; any member may update only the weekly
-    //   ritual streak fields. A squad is adopted by exactly one mentor
+    //   Founder manages the doc. The ritual streak is server-written
+    //   (POST /api/ritual). A squad is adopted by exactly one mentor
     //   (mentorUid), who alone writes the squad's `track` (the ordered list
     //   of milestones and their done state) and takes its check-ins — and a
     //   squad cannot reach state 'active' without both 3+ members and that
     //   mentor.
     //   Subcollections:
     //     applications/{applicantUid} — pitch + status + declineReason
-    //     logs/{auto} — build log entries (the squad's pulse)
+    //     logs/{auto} — build log entries (the squad's pulse; server-written)
     //     checkIns/{auto} — squad↔mentor sessions, visible to that squad only
     //
     // Collection: workshops — mentor-hosted sessions, readable by every
@@ -374,14 +375,23 @@ service cloud.firestore {
       allow create: if isOwner(userId) && isValidProfile(request.resource.data) &&
                        request.resource.data.role == 'operator' &&
                        request.resource.data.plan == 'free' &&
+                       // A new account starts with at most a 1-day streak and
+                       // nothing banked; every later change is server-written.
+                       request.resource.data.streak <= 1 &&
+                       request.resource.data.streakFreezes == 0 &&
+                       request.resource.data.get('lastBuildLogDay', '') == '' &&
                        isApprovedMember();
       // consentStatus + consentEmailSentAt are immutable on a self-update: a
       // pending minor must NOT be able to grant their own consent. Consent is
       // flipped only by a mentor (isConsentGrant) or the server (Admin SDK,
       // which bypasses rules) via the parent-approval link.
+      // The STREAK is immutable on a self-update too: streak, streakFreezes,
+      // lastActiveDay and lastBuildLogDay are written only by the server
+      // (/api/build-log, /api/ritual — app/lib/streakServer.ts).
       allow update: if (isOwner(userId) && isValidProfile(request.resource.data) &&
                         areImmutableFieldsUnchanged(['uid', 'createdAt', 'role', 'plan',
-                          'consentStatus', 'consentEmailSentAt'])) ||
+                          'consentStatus', 'consentEmailSentAt',
+                          'streak', 'streakFreezes', 'lastActiveDay', 'lastBuildLogDay'])) ||
                        isConsentGrant();
       allow delete: if false;
     }
@@ -492,15 +502,6 @@ service cloud.firestore {
                resource.data.memberUids.size() >= 3));
     }
 
-    // Any member may log the weekly ritual — only those two fields.
-    function isRitualUpdate() {
-      return request.resource.data.diff(resource.data).affectedKeys().hasOnly(['weeklyStreak', 'lastRitualWeek']) &&
-             request.resource.data.weeklyStreak is number &&
-             request.resource.data.weeklyStreak >= 0 &&
-             request.resource.data.weeklyStreak <= resource.data.weeklyStreak + 1 &&
-             validString(request.resource.data.lastRitualWeek, 0, 8);
-    }
-
     match /cohorts/{cohortId} {
       allow read: if isAuthenticated();
 
@@ -516,17 +517,17 @@ service cloud.firestore {
                        !('track' in request.resource.data);
 
       // Founder manages the doc; founder must stay a member. Mentor
-      // assignment and the track are NOT the founder's to write — the first
-      // moves only through isMentorAdopt (or the Admin SDK), the second only
-      // through isTrackUpdate. Members may only tick the ritual.
+      // assignment, the track and the weekly ritual streak are NOT the
+      // founder's to write — the first moves only through isMentorAdopt (or
+      // the Admin SDK), the second only through isTrackUpdate, and the ritual
+      // (weeklyStreak / lastRitualWeek) only through POST /api/ritual.
       allow update: if consentAllows(request.auth.uid) &&
                        ((isCohortFounder(cohortId) &&
                         isValidCohort(request.resource.data) &&
                         areImmutableFieldsUnchanged(['founderUid', 'founderName', 'createdAt',
                           'mentorUid', 'mentorName', 'mentorNotifiedAt',
-                          'track', 'trackUpdatedAt']) &&
+                          'track', 'trackUpdatedAt', 'weeklyStreak', 'lastRitualWeek']) &&
                         request.resource.data.founderUid in request.resource.data.memberUids) ||
-                       (isCohortMember(cohortId) && isRitualUpdate()) ||
                        isMentorAdopt() ||
                        isTrackUpdate(cohortId));
 
@@ -623,18 +624,12 @@ service cloud.firestore {
 
       // ---------------- Build log ----------------
 
+      // Posting is SERVER-ONLY (POST /api/build-log): a build log is a streak
+      // action, and the streak is computed and written alongside it by the
+      // Admin SDK. Members read; the author may delete their own line.
       match /logs/{logId} {
         allow read: if isCohortMember(cohortId) || isMentor();
-
-        allow create: if isCohortMember(cohortId) &&
-                         consentAllows(request.auth.uid) &&
-                         hasOnlyAllowedFields(['uid', 'name', 'text', 'day', 'createdAt']) &&
-                         hasRequiredFields(['uid', 'name', 'text', 'day', 'createdAt']) &&
-                         request.resource.data.uid == request.auth.uid &&
-                         validString(request.resource.data.name, 1, 80) &&
-                         validString(request.resource.data.text, 1, 300) &&
-                         validString(request.resource.data.day, 10, 10);
-
+        allow create: if false;
         allow update: if false;
         allow delete: if isOwner(resource.data.uid);
       }

@@ -35,7 +35,6 @@ import type {
   TrackMilestone,
 } from "./types";
 import { canActivate, CHECKIN_DEFAULT_MINS, TRACK_MAX_MILESTONES } from "./types";
-import { localDay, isoWeek, touchStreak } from "./streaks";
 
 export const MAX_PENDING_APPLICATIONS = 3;
 
@@ -211,20 +210,9 @@ export async function createCohort(
   return ref.id;
 }
 
-/** Weekly ritual check-in: any member marks "we held it" once per ISO
- *  week. Extends the squad's weekly streak, and showing up counts as a
- *  qualifying action for the caller's own daily streak. */
-export async function markRitual(cohort: Cohort, profile: Profile): Promise<void> {
-  const week = isoWeek();
-  if (cohort.lastRitualWeek !== week) {
-    const prev = isoWeek(new Date(Date.now() - 7 * 86400000));
-    await updateDoc(doc(getDb(), "cohorts", cohort.id), {
-      weeklyStreak: cohort.lastRitualWeek === prev ? cohort.weeklyStreak + 1 : 1,
-      lastRitualWeek: week,
-    });
-  }
-  await touchStreak(profile);
-}
+/* The weekly ritual and the build log are STREAK actions and are written by
+   the server (POST /api/ritual, POST /api/build-log — see lib/api.ts), so the
+   streak can never be set from a browser. Reads stay here. */
 
 /* ---------------- The track (mentor-authored) ---------------- */
 
@@ -492,30 +480,6 @@ export function watchBuildLogs(
   return onSnapshot(q, (snap) => {
     cb(snap.docs.map((d) => ({ id: d.id, ...d.data() }) as BuildLog));
   }, listenerError(`logs/${cohortId}`));
-}
-
-/** The cheapest qualifying action: one line keeps the streak alive. */
-export async function addBuildLog(
-  cohortId: string,
-  profile: Profile,
-  text: string
-): Promise<void> {
-  const db = getDb();
-  const today = localDay();
-  await addDoc(collection(db, "cohorts", cohortId, "logs"), {
-    uid: profile.uid,
-    name: profile.name,
-    text,
-    day: today,
-    createdAt: serverTimestamp(),
-  });
-  if (profile.lastBuildLogDay !== today) {
-    await updateDoc(doc(db, "profiles", profile.uid), {
-      lastBuildLogDay: today,
-      updatedAt: serverTimestamp(),
-    });
-  }
-  await touchStreak(profile);
 }
 
 export async function removeBuildLog(cohortId: string, logId: string): Promise<void> {

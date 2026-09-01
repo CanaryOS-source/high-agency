@@ -69,6 +69,27 @@ export async function leaveWorkshop(id: string): Promise<SeatResult> {
   return r.data.status;
 }
 
+/* ---------------- Streak actions ---------------- */
+
+/** One line to the squad's build log. The server writes the log and the
+ *  streak together; the live profile listener moves the flame. */
+export async function postBuildLog(cohortId: string, text: string): Promise<void> {
+  const r = await authed<{ error?: string }>("/api/build-log", {
+    method: "POST",
+    body: JSON.stringify({ cohortId, text }),
+  });
+  if (!r.ok) throw new Error(r.data.error ?? "failed");
+}
+
+/** "We met" — once per ISO week per squad, counts the day for the caller. */
+export async function markRitual(cohortId: string): Promise<void> {
+  const r = await authed<{ error?: string }>("/api/ritual", {
+    method: "POST",
+    body: JSON.stringify({ cohortId }),
+  });
+  if (!r.ok) throw new Error(r.data.error ?? "failed");
+}
+
 /* ---------------- Check-ins ---------------- */
 
 export async function confirmCheckIn(input: ConfirmWire): Promise<{ calendar: "linked" | "manual" }> {

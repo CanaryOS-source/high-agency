@@ -1,14 +1,15 @@
-import { doc, updateDoc, serverTimestamp } from "firebase/firestore";
-import { getDb } from "./firebase";
-import type { Profile } from "./types";
-
 /* ------------------------------------------------------------------ */
 /* Streaks — the only game mechanic. No XP, no levels, no gates.       */
-/* A streak is kept alive by doing real things: a build log, a weekly  */
-/* ritual, or showing up to a workshop. Logging in earns nothing.      */
+/* A streak is kept alive by doing real things: a build log or the     */
+/* weekly ritual. Logging in earns nothing.                            */
+/*                                                                     */
+/* The math lives here (pure, shared by browser and server); the       */
+/* WRITES live in app/lib/streakServer.ts behind /api/build-log and    */
+/* /api/ritual. Clients cannot touch streak fields — the rules freeze  */
+/* them — so the number on the flame is one the server computed.       */
 /* ------------------------------------------------------------------ */
 
-/** YYYY-MM-DD in the user's local timezone — a "day" is the local day. */
+/** YYYY-MM-DD in the browser's local timezone — display only. */
 export function localDay(d = new Date()): string {
   const y = d.getFullYear();
   const m = String(d.getMonth() + 1).padStart(2, "0");
@@ -16,7 +17,8 @@ export function localDay(d = new Date()): string {
   return `${y}-${m}-${day}`;
 }
 
-/** ISO week id (YYYY-Www) in local time — the squad ritual cadence. */
+/** ISO week id (YYYY-Www) for a local calendar date — the squad ritual
+ *  cadence. Takes a Date whose local getters hold the day in question. */
 export function isoWeek(d = new Date()): string {
   const t = new Date(d.getFullYear(), d.getMonth(), d.getDate());
   // Thursday of the current week decides the ISO year.
@@ -32,36 +34,37 @@ export function isoWeek(d = new Date()): string {
 
 export const MAX_FREEZES = 3;
 
-/** Called after every qualifying action. Same day: no-op. Yesterday active:
+/** The day before a YYYY-MM-DD, as YYYY-MM-DD (calendar arithmetic, no tz). */
+export function dayBefore(day: string, n = 1): string {
+  const [y, m, d] = day.split("-").map(Number);
+  const t = new Date(Date.UTC(y, m - 1, d - n));
+  return t.toISOString().slice(0, 10);
+}
+
+export interface StreakState {
+  streak: number;
+  streakFreezes: number;
+  lastActiveDay: string;
+}
+
+/** One qualifying action on `today`. Same day: unchanged. Yesterday active:
  *  extend (and bank a freeze every 7 days, max 3). Missed exactly one day
  *  with a freeze banked: the freeze burns and the streak survives.
- *  Otherwise: friendly restart at 1 — never shame. (Client-trusted for v1.) */
-export async function touchStreak(profile: Profile): Promise<void> {
-  const today = localDay();
-  if (profile.lastActiveDay === today) return;
+ *  Otherwise: friendly restart at 1 — never shame. Pure. */
+export function nextStreak(prev: StreakState, today: string): StreakState {
+  if (prev.lastActiveDay === today) return prev;
 
-  const yesterday = localDay(new Date(Date.now() - 86400000));
-  const dayBefore = localDay(new Date(Date.now() - 2 * 86400000));
-
+  let freezes = prev.streakFreezes ?? 0;
   let streak: number;
-  let freezes = profile.streakFreezes ?? 0;
-
-  if (profile.lastActiveDay === yesterday) {
-    streak = profile.streak + 1;
-  } else if (profile.lastActiveDay === dayBefore && freezes > 0) {
+  if (prev.lastActiveDay === dayBefore(today, 1)) {
+    streak = prev.streak + 1;
+  } else if (prev.lastActiveDay === dayBefore(today, 2) && freezes > 0) {
     freezes -= 1; // freeze covers the missed day
-    streak = profile.streak + 1;
+    streak = prev.streak + 1;
   } else {
     streak = 1;
   }
-
-  // Bank one freeze per completed 7-day run.
   if (streak > 0 && streak % 7 === 0 && freezes < MAX_FREEZES) freezes += 1;
 
-  await updateDoc(doc(getDb(), "profiles", profile.uid), {
-    streak,
-    streakFreezes: freezes,
-    lastActiveDay: today,
-    updatedAt: serverTimestamp(),
-  });
+  return { streak, streakFreezes: freezes, lastActiveDay: today };
 }
