@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useState } from "react";
 
 const ITEMS: { q: string; a: string }[] = [
   {
@@ -31,8 +31,11 @@ const ITEMS: { q: string; a: string }[] = [
 
 function QaItem({ q, a }: { q: string; a: string }) {
   const [open, setOpen] = useState(false);
-  const ansRef = useRef<HTMLDivElement>(null);
 
+  // The open/closed height is a CSS concern (`.qa__a` animates to a fixed
+  // max-height), so nothing here has to measure the answer. Measuring meant
+  // reading a ref during render, which is unsound and took the first frame's
+  // height from the previous render.
   return (
     <div className={`qa${open ? " open" : ""}`}>
       <button
@@ -43,11 +46,7 @@ function QaItem({ q, a }: { q: string; a: string }) {
         {q}
         <span className="qa__plus" />
       </button>
-      <div
-        ref={ansRef}
-        className="qa__a"
-        style={{ maxHeight: open ? ansRef.current?.scrollHeight : 0 }}
-      >
+      <div className="qa__a">
         <p>{a}</p>
       </div>
     </div>

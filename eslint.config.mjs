@@ -13,6 +13,13 @@ const eslintConfig = defineConfig([
     "build/**",
     "next-env.d.ts",
   ]),
+  // Local admin/dev tooling: plain CommonJS Node scripts run with `node
+  // scripts/*.js`, never bundled and never imported by the app. `require()`
+  // is correct there, so the TypeScript-oriented ban doesn't apply.
+  {
+    files: ["scripts/**/*.js"],
+    rules: { "@typescript-eslint/no-require-imports": "off" },
+  },
 ]);
 
 export default eslintConfig;

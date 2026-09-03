@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useState, useSyncExternalStore } from "react";
 import Reveal from "./components/Reveal";
 import Counter from "./components/Counter";
 import Marquee from "./components/Marquee";
@@ -24,6 +24,23 @@ import {
 
 const APPLICATION_KEY = "ha_application";
 const REFERRAL_KEY = "ha_ref";
+
+/** Whether this browser already submitted an application. Latched once per
+ *  page load: the receipt can't change under us mid-visit, and a stable
+ *  snapshot is what useSyncExternalStore needs. */
+let appliedAtLoad: boolean | null = null;
+
+function readApplied(): boolean {
+  if (appliedAtLoad === null) {
+    try {
+      const saved = JSON.parse(localStorage.getItem(APPLICATION_KEY) || "null");
+      appliedAtLoad = !!(saved && saved.submitted);
+    } catch {
+      appliedAtLoad = false;
+    }
+  }
+  return appliedAtLoad;
+}
 
 /**
  * Resolve the referral code this visitor arrived on, once, on mount.
@@ -150,17 +167,18 @@ function CaptureForm({
 export default function Waitlist() {
   const [modalOpen, setModalOpen] = useState(false);
   const [prefillEmail, setPrefillEmail] = useState("");
-  const [applied, setApplied] = useState(false);
+  const [justApplied, setJustApplied] = useState(false);
   const incoming = useReferralCode();
 
-  useEffect(() => {
-    try {
-      const saved = JSON.parse(
-        localStorage.getItem(APPLICATION_KEY) || "null"
-      );
-      if (saved && saved.submitted) setApplied(true);
-    } catch {}
-  }, []);
+  // localStorage is an external store, so it's read through
+  // useSyncExternalStore: the server snapshot ("not applied") is what hydration
+  // compares against, and nothing has to write state on mount.
+  const appliedBefore = useSyncExternalStore(
+    () => () => {},
+    readApplied,
+    () => false
+  );
+  const applied = appliedBefore || justApplied;
 
   const openModal = useCallback((email = "") => {
     setPrefillEmail(email);
@@ -343,8 +361,8 @@ export default function Waitlist() {
                   Momentum out.
                 </Reveal>
                 <Reveal as="p" className="lead" d={2}>
-                  Seven milestones. Every one is a real-world win —
-                  and every win is XP, levels, and status you earned, not bought.
+                  A track your mentor writes for your squad. Every step is a
+                  real-world win — and the only score is the streak you keep by shipping.
                 </Reveal>
               </div>
               <Reveal d={2}>
@@ -561,7 +579,7 @@ export default function Waitlist() {
         prefillEmail={prefillEmail}
         referredBy={incoming.code}
         onClose={() => setModalOpen(false)}
-        onApplied={() => setApplied(true)}
+        onApplied={() => setJustApplied(true)}
       />
     </>
   );

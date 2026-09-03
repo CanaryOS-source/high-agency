@@ -1,5 +1,3 @@
-/* eslint-disable @typescript-eslint/no-require-imports -- CommonJS admin
-   script, run with plain `node`, like everything else in scripts/. */
 //
 // ============================================================================
 // LOCAL VERIFICATION ONLY. THIS IS NOT A PRODUCTION PATH.

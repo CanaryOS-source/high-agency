@@ -1,5 +1,3 @@
-/* eslint-disable @typescript-eslint/no-require-imports -- CommonJS admin
-   script, run with plain `node`, like everything else in scripts/. */
 // Provision the staff lead-source referral codes.
 //
 // Five people on the team need a referral link they can put in a post. This

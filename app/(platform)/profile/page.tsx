@@ -7,7 +7,7 @@ import { saveProfile } from "../../lib/db";
 import { localDay } from "../../lib/streaks";
 import { DOMAINS, SKILLS } from "../../lib/types";
 import { Avatar, FlameIcon } from "../../components/ui";
-import type { VentureStage } from "../../lib/types";
+import type { Profile, VentureStage } from "../../lib/types";
 
 const STAGES: { id: VentureStage; label: string }[] = [
   { id: "idea", label: "Just an idea" },
@@ -20,23 +20,6 @@ export default function ProfilePage() {
   const { user, profile } = useAuth();
   const router = useRouter();
 
-  const [headline, setHeadline] = useState("");
-  const [building, setBuilding] = useState("");
-  const [stage, setStage] = useState<VentureStage>("idea");
-  const [domains, setDomains] = useState<string[]>([]);
-  const [skills, setSkills] = useState<string[]>([]);
-  const [proofUrl, setProofUrl] = useState("");
-  const [proofNote, setProofNote] = useState("");
-  const [bio, setBio] = useState("");
-  const [github, setGithub] = useState("");
-  const [linkedin, setLinkedin] = useState("");
-  const [site, setSite] = useState("");
-
-  const [busy, setBusy] = useState(false);
-  const [saved, setSaved] = useState(false);
-  const [error, setError] = useState("");
-  const [loaded, setLoaded] = useState(false);
-
   useEffect(() => {
     if (user === null) router.replace("/login");
     else if (user && profile === null) router.replace("/onboarding");
@@ -45,29 +28,36 @@ export default function ProfilePage() {
     else if (profile?.role === "mentor") router.replace("/mentor/you");
   }, [user, profile, router]);
 
-  useEffect(() => {
-    if (profile && !loaded) {
-      setHeadline(profile.headline ?? "");
-      setBuilding(profile.building ?? "");
-      setStage(profile.stage ?? "idea");
-      setDomains(profile.domains ?? []);
-      setSkills(profile.skills ?? []);
-      setProofUrl(profile.proofUrl ?? "");
-      setProofNote(profile.proofNote ?? "");
-      setBio(profile.bio ?? "");
-      setGithub(profile.links?.github ?? "");
-      setLinkedin(profile.links?.linkedin ?? "");
-      setSite(profile.links?.site ?? "");
-      setLoaded(true);
-    }
-  }, [profile, loaded]);
+  if (!user || !profile) return null;
+  return <ProfileCard key={user.uid} uid={user.uid} profile={profile} />;
+}
+
+/** The editable card. Mounted only once the profile has loaded, and keyed by
+ *  uid, so every field seeds itself from the profile at mount — nothing has to
+ *  copy the profile into state afterwards, and signing in as someone else
+ *  remounts the form rather than leaving the previous answers in the boxes. */
+function ProfileCard({ uid, profile }: { uid: string; profile: Profile }) {
+  const [headline, setHeadline] = useState(profile.headline ?? "");
+  const [building, setBuilding] = useState(profile.building ?? "");
+  const [stage, setStage] = useState<VentureStage>(profile.stage ?? "idea");
+  const [domains, setDomains] = useState<string[]>(profile.domains ?? []);
+  const [skills, setSkills] = useState<string[]>(profile.skills ?? []);
+  const [proofUrl, setProofUrl] = useState(profile.proofUrl ?? "");
+  const [proofNote, setProofNote] = useState(profile.proofNote ?? "");
+  const [bio, setBio] = useState(profile.bio ?? "");
+  const [github, setGithub] = useState(profile.links?.github ?? "");
+  const [linkedin, setLinkedin] = useState(profile.links?.linkedin ?? "");
+  const [site, setSite] = useState(profile.links?.site ?? "");
+
+  const [busy, setBusy] = useState(false);
+  const [saved, setSaved] = useState(false);
+  const [error, setError] = useState("");
 
   function toggle(list: string[], set: (v: string[]) => void, item: string) {
     set(list.includes(item) ? list.filter((x) => x !== item) : [...list, item]);
   }
 
   async function submit() {
-    if (!user || !profile) return;
     if (!headline.trim() || !building.trim() || domains.length === 0 || skills.length === 0) {
       setError("Headline, what you're building, a domain, and an interest — minimum.");
       return;
@@ -80,7 +70,7 @@ export default function ProfilePage() {
       // identity/gamification fields. This also self-heals any profile
       // doc that predates a field (e.g. an empty lastActiveDay).
       await saveProfile(
-        user.uid,
+        uid,
         {
           name: profile.name,
           ageBand: profile.ageBand,
@@ -114,8 +104,6 @@ export default function ProfilePage() {
       setBusy(false);
     }
   }
-
-  if (!user || !profile) return null;
 
   const alive = profile.lastActiveDay === localDay();
 

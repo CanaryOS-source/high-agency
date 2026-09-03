@@ -1,5 +1,3 @@
-/* eslint-disable @typescript-eslint/no-require-imports -- CommonJS admin
-   script, run with plain `node`, like everything else in scripts/. */
 // Provision the High Agency property group and custom contact properties in
 // HubSpot. Idempotent: it creates what's missing, skips what exists, and never
 // modifies a property that is already there — if someone widened a picklist in

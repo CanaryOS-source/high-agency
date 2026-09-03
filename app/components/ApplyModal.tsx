@@ -132,73 +132,80 @@ export default function ApplyModal({
   onClose,
   onApplied,
 }: ApplyModalProps) {
-  const [step, setStep] = useState(1);
-  const [name, setName] = useState("");
-  const [email, setEmail] = useState("");
-  const [age, setAge] = useState("");
-  const [social, setSocial] = useState("");
-  const [building, setBuilding] = useState("");
-  const [boldest, setBoldest] = useState("");
-  const [impact, setImpact] = useState("");
-  const [problem, setProblem] = useState("");
-  const [plan, setPlan] = useState("");
+  // A submission this browser already made. Read once, at mount, rather than
+  // in an open-effect: the modal renders nothing until it is opened, so there
+  // is no server/client output for a storage read to disagree about.
+  const [restored] = useState<ApplicationRecord | null>(() => {
+    if (typeof window === "undefined") return null;
+    const saved = readSaved();
+    return saved && saved.submitted ? saved : null;
+  });
+
+  const [step, setStep] = useState(restored ? 5 : 1);
+  const [name, setName] = useState(restored?.name ?? "");
+  // null = untouched, so an email typed into the hero form still shows through.
+  const [emailEdit, setEmail] = useState<string | null>(restored?.email ?? null);
+  const [age, setAge] = useState(restored?.age ?? "");
+  const [social, setSocial] = useState(restored?.social ?? "");
+  const [building, setBuilding] = useState(restored?.building ?? "");
+  const [boldest, setBoldest] = useState(restored?.boldest ?? "");
+  const [impact, setImpact] = useState(restored?.impact ?? "");
+  const [problem, setProblem] = useState(restored?.problem ?? "");
+  const [plan, setPlan] = useState(restored?.plan ?? "");
   // Marketing opt-in. Starts UNCHECKED and stays optional — nothing on this
   // form is gated on it, and nothing sends off it today.
-  const [marketingConsent, setMarketingConsent] = useState(false);
+  const [marketingConsent, setMarketingConsent] = useState(
+    restored?.marketingConsent === true
+  );
   const [err, setErr] = useState("");
   const [submitErr, setSubmitErr] = useState("");
   const [busy, setBusy] = useState(false);
-  const [result, setResult] = useState<ApplicationRecord | null>(null);
+  const [result, setResult] = useState<ApplicationRecord | null>(restored);
+
+  const email = emailEdit ?? prefillEmail ?? "";
 
   const cardRef = useRef<HTMLDivElement>(null);
   const firstFieldRef = useRef<HTMLInputElement>(null);
   const lastFocus = useRef<Element | null>(null);
 
-  // Open / close side-effects: lock scroll, manage focus, restore prior submit.
+  /** Closing rewinds the wizard for next time but keeps the answers, so an
+   *  accidental close doesn't cost anyone a half-written application. Doing it
+   *  here rather than in an open-effect keeps state moves in event handlers. */
+  const close = useCallback(() => {
+    setStep(restored ? 5 : 1);
+    setErr("");
+    onClose();
+  }, [onClose, restored]);
+
+  // Open / close side-effects: lock scroll, manage focus.
   useEffect(() => {
-    if (open) {
-      lastFocus.current = document.activeElement;
-      document.body.style.overflow = "hidden";
-      const saved = readSaved();
-      if (saved && saved.submitted) {
-        // Rehydrate every answer, not just the receipt, so a restored record
-        // round-trips if we ever route back into the questions.
-        setResult(saved);
-        setName(saved.name ?? "");
-        setEmail(saved.email ?? "");
-        setAge(saved.age ?? "");
-        setSocial(saved.social ?? "");
-        setBuilding(saved.building ?? "");
-        setBoldest(saved.boldest ?? "");
-        setImpact(saved.impact ?? "");
-        setProblem(saved.problem ?? "");
-        setPlan(saved.plan ?? "");
-        setMarketingConsent(saved.marketingConsent === true);
-        setStep(5);
-      } else {
-        setStep(1);
-        setErr("");
-        if (prefillEmail) setEmail(prefillEmail);
-        setTimeout(() => firstFieldRef.current?.focus(), 60);
-      }
-    } else {
-      document.body.style.overflow = "";
+    if (!open) {
       (lastFocus.current as HTMLElement | null)?.focus?.();
+      return;
+    }
+    lastFocus.current = document.activeElement;
+    document.body.style.overflow = "hidden";
+    if (!restored) {
+      const t = setTimeout(() => firstFieldRef.current?.focus(), 60);
+      return () => {
+        clearTimeout(t);
+        document.body.style.overflow = "";
+      };
     }
     return () => {
       document.body.style.overflow = "";
     };
-  }, [open, prefillEmail]);
+  }, [open, restored]);
 
   // Escape to close.
   useEffect(() => {
     if (!open) return;
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
+      if (e.key === "Escape") close();
     };
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
-  }, [open, onClose]);
+  }, [open, close]);
 
   useEffect(() => {
     if (cardRef.current) cardRef.current.scrollTop = 0;
@@ -325,9 +332,9 @@ export default function ApplyModal({
       aria-modal="true"
       aria-labelledby="modalTitle"
     >
-      <div className="modal__scrim" onClick={onClose} />
+      <div className="modal__scrim" onClick={close} />
       <div className="modal__card" ref={cardRef}>
-        <button className="modal__close" onClick={onClose} aria-label="Close">
+        <button className="modal__close" onClick={close} aria-label="Close">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
             <path d="M6 6l12 12M18 6L6 18" />
           </svg>
@@ -575,7 +582,7 @@ export default function ApplyModal({
               <div className="modal__actions" style={{ marginTop: 30 }}>
                 <button
                   className="btn btn--ghost btn--block"
-                  onClick={onClose}
+                  onClick={close}
                 >
                   Close
                 </button>

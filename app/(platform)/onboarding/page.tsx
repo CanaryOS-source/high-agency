@@ -54,8 +54,9 @@ export default function OnboardingPage() {
   const [step, setStep] = useState<1 | 2>(1);
 
   // ---- Stage 1: signup basics (under 2 minutes) ----
-  const [firstName, setFirstName] = useState("");
-  const [lastName, setLastName] = useState("");
+  // null = untouched, so the name suggested by the account can still show through.
+  const [firstNameEdit, setFirstName] = useState<string | null>(null);
+  const [lastNameEdit, setLastName] = useState<string | null>(null);
   const [dob, setDob] = useState("");
   const [country, setCountry] = useState("");
   const [city, setCity] = useState("");
@@ -90,14 +91,12 @@ export default function OnboardingPage() {
     }
   }, [user, profile, router]);
 
-  // Prefill name from the Google account so it rarely has to be typed.
-  useEffect(() => {
-    if (user?.displayName) {
-      const [first, ...rest] = user.displayName.split(" ");
-      setFirstName((n) => n || first);
-      setLastName((n) => n || rest.join(" "));
-    }
-  }, [user]);
+  // Prefill name from the Google account so it rarely has to be typed. The
+  // account arrives after first render, so the suggestion is a fallback the
+  // fields show until they're touched — not something copied into state later.
+  const [suggestedFirst, ...suggestedRest] = (user?.displayName ?? "").split(" ");
+  const firstName = firstNameEdit ?? suggestedFirst ?? "";
+  const lastName = lastNameEdit ?? suggestedRest.join(" ");
 
   // Cycle the example placeholders so the prompt reads as "any of these is
   // fine". Honors prefers-reduced-motion by holding on the first example.

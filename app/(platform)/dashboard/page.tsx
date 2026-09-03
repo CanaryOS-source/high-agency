@@ -19,7 +19,9 @@ export default function HomePage() {
   const router = useRouter();
 
   const [myCohorts, setMyCohorts] = useState<Cohort[] | null>(null);
-  const [logs, setLogs] = useState<BuildLog[]>([]);
+  // Tagged with the squad it came from: which log belongs on screen is decided
+  // at render, so no squad ever briefly shows another squad's lines.
+  const [logSnap, setLogSnap] = useState<{ cohortId: string; logs: BuildLog[] } | null>(null);
   const [workshops, setWorkshops] = useState<Workshop[]>([]);
   const [logText, setLogText] = useState("");
   const [busy, setBusy] = useState(false);
@@ -39,13 +41,14 @@ export default function HomePage() {
 
   const cohort = myCohorts?.[0] ?? null;
 
+  const cohortId = cohort?.id;
+
   useEffect(() => {
-    if (!cohort) {
-      setLogs([]);
-      return;
-    }
-    return watchBuildLogs(cohort.id, setLogs);
-  }, [cohort?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+    if (!cohortId) return;
+    return watchBuildLogs(cohortId, (l) => setLogSnap({ cohortId, logs: l }));
+  }, [cohortId]);
+
+  const logs = logSnap && logSnap.cohortId === cohortId ? logSnap.logs : [];
 
   useEffect(() => {
     if (!user) return;

@@ -10,7 +10,7 @@ import { saveProfile, watchMyUpcomingWorkshops } from "../../../lib/db";
 import { localDay } from "../../../lib/streaks";
 import { CalendarConnect } from "../../../components/CalendarConnect";
 import { DOMAINS, SKILLS } from "../../../lib/types";
-import type { Workshop } from "../../../lib/types";
+import type { Profile, Workshop } from "../../../lib/types";
 import { Avatar } from "../../../components/ui";
 import {
   TagField,
@@ -22,50 +22,38 @@ const EXPERTISE_PRESETS = DOMAINS.filter((d) => d !== "Other");
 
 export default function MentorYouPage() {
   const { user, profile } = useMentorGate();
+
+  if (!user || !profile) return null;
+  return <MentorCard key={user.uid} uid={user.uid} profile={profile} />;
+}
+
+/** The editable mentor card. Mounted only once the profile has loaded, and
+ *  keyed by uid, so every field seeds itself from the profile at mount —
+ *  nothing has to copy the profile into state afterwards. */
+function MentorCard({ uid, profile }: { uid: string; profile: Profile }) {
   const { logout } = useAuth();
-  const { mine } = useMentoredSquadList(user?.uid ?? null);
+  const { mine } = useMentoredSquadList(uid);
 
   const [sessions, setSessions] = useState<Workshop[]>([]);
 
-  const [headline, setHeadline] = useState("");
-  const [domains, setDomains] = useState<string[]>([]);
-  const [skills, setSkills] = useState<string[]>([]);
-  const [building, setBuilding] = useState("");
-  const [proofUrl, setProofUrl] = useState("");
-  const [proofNote, setProofNote] = useState("");
-  const [bio, setBio] = useState("");
-  const [github, setGithub] = useState("");
-  const [linkedin, setLinkedin] = useState("");
-  const [site, setSite] = useState("");
+  const [headline, setHeadline] = useState(profile.headline ?? "");
+  const [domains, setDomains] = useState<string[]>(profile.domains ?? []);
+  const [skills, setSkills] = useState<string[]>(profile.skills ?? []);
+  const [building, setBuilding] = useState(profile.building ?? "");
+  const [proofUrl, setProofUrl] = useState(profile.proofUrl ?? "");
+  const [proofNote, setProofNote] = useState(profile.proofNote ?? "");
+  const [bio, setBio] = useState(profile.bio ?? "");
+  const [github, setGithub] = useState(profile.links?.github ?? "");
+  const [linkedin, setLinkedin] = useState(profile.links?.linkedin ?? "");
+  const [site, setSite] = useState(profile.links?.site ?? "");
 
   const [busy, setBusy] = useState(false);
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState("");
-  const [loaded, setLoaded] = useState(false);
 
-  useEffect(() => {
-    if (!user) return;
-    return watchMyUpcomingWorkshops(user.uid, setSessions);
-  }, [user]);
-
-  useEffect(() => {
-    if (profile && !loaded) {
-      setHeadline(profile.headline ?? "");
-      setDomains(profile.domains ?? []);
-      setSkills(profile.skills ?? []);
-      setBuilding(profile.building ?? "");
-      setProofUrl(profile.proofUrl ?? "");
-      setProofNote(profile.proofNote ?? "");
-      setBio(profile.bio ?? "");
-      setGithub(profile.links?.github ?? "");
-      setLinkedin(profile.links?.linkedin ?? "");
-      setSite(profile.links?.site ?? "");
-      setLoaded(true);
-    }
-  }, [profile, loaded]);
+  useEffect(() => watchMyUpcomingWorkshops(uid, setSessions), [uid]);
 
   async function submit() {
-    if (!user || !profile) return;
     if (!headline.trim() || domains.length === 0 || skills.length === 0) {
       setError("A headline, one area of expertise, and one thing you can coach.");
       return;
@@ -78,7 +66,7 @@ export default function MentorYouPage() {
       // this page deliberately doesn't expose. `stage` is an operator concept
       // and is carried through untouched rather than surfaced to a mentor.
       await saveProfile(
-        user.uid,
+        uid,
         {
           name: profile.name,
           ageBand: profile.ageBand,
@@ -117,8 +105,6 @@ export default function MentorYouPage() {
       setBusy(false);
     }
   }
-
-  if (!user || !profile) return null;
 
   return (
     <div className="screen">

@@ -1185,7 +1185,16 @@ button { font-family: inherit; cursor: pointer; border: none; background: none; 
 .qa__plus::after { top: 0; bottom: 0; left: 50%; width: 3px; transform: translateX(-50%); transition: opacity var(--t-med); }
 .qa.open .qa__plus { transform: rotate(180deg); }
 .qa.open .qa__plus::after { opacity: 0; }
+/* Collapse by animating the row track, not a measured max-height: the answer
+   sizes itself, so no JS has to read scrollHeight to open one. */
+/* Open/close is a fixed max-height rather than a measured one, so nothing has
+   to read the answer's height during render. The cap only has to clear the
+   longest answer in Faq.tsx (~70px today) — raise it if one ever runs past
+   about five lines, or the tail will clip.
+   (grid-template-rows: 0fr → 1fr would size itself, but it still isn't
+   animatable everywhere, and a stuck-closed FAQ is worse than a fixed cap.) */
 .qa__a { max-height: 0; overflow: hidden; transition: max-height var(--t-med) var(--ease-out); }
+.qa.open .qa__a { max-height: 320px; }
 .qa__a p { color: var(--text-muted); font-size: 15px; line-height: 1.55; padding-bottom: 20px; max-width: 62ch; }
 
 /* final + footer */

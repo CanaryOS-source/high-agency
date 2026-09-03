@@ -16,22 +16,29 @@ const COOLDOWN_S = 60;
  */
 export function ConsentResend({ uid, sentAtMs }: { uid?: string; sentAtMs?: number }) {
   const [busy, setBusy] = useState(false);
-  const [left, setLeft] = useState(0); // seconds until resend allowed
+  // The cooldown is held as the epoch ms it ends at, not as a ticking count.
+  // A deadline is pure data — it can be derived from `sentAtMs` at render — so
+  // the only thing the clock effect does is publish "what time is it now",
+  // which also stops the countdown drifting or stalling in a backgrounded tab.
+  const [until, setUntil] = useState<number | null>(null);
+  const [now, setNow] = useState(0); // 0 until the first client tick (SSR-safe)
   const [note, setNote] = useState<string | null>(null);
 
-  // Seed the cooldown from the last known send (set in a mount effect, not the
-  // initial state, to avoid an SSR/client hydration mismatch on the label).
-  useEffect(() => {
-    if (!sentAtMs) return;
-    const rem = COOLDOWN_S - Math.floor((Date.now() - sentAtMs) / 1000);
-    if (rem > 0) setLeft(rem);
-  }, [sentAtMs]);
+  const deadline = until ?? (sentAtMs ? sentAtMs + COOLDOWN_S * 1000 : null);
 
   useEffect(() => {
-    if (left <= 0) return;
-    const t = setInterval(() => setLeft((s) => Math.max(0, s - 1)), 1000);
-    return () => clearInterval(t);
-  }, [left]);
+    if (deadline === null) return;
+    const tick = () => setNow(Date.now());
+    const raf = requestAnimationFrame(tick); // first read, before paint
+    const t = setInterval(tick, 1000);
+    return () => {
+      cancelAnimationFrame(raf);
+      clearInterval(t);
+    };
+  }, [deadline]);
+
+  const left =
+    deadline && now ? Math.max(0, Math.ceil((deadline - now) / 1000)) : 0;
 
   async function resend() {
     if (busy || left > 0) return;
@@ -41,9 +48,9 @@ export function ConsentResend({ uid, sentAtMs }: { uid?: string; sentAtMs?: numb
       const r = await requestConsentEmail(uid);
       if (r.ok) {
         setNote("Sent — check their inbox (and spam).");
-        setLeft(COOLDOWN_S);
+        setUntil(Date.now() + COOLDOWN_S * 1000);
       } else if (r.error === "rate-limited") {
-        setLeft(r.retryAfter ?? COOLDOWN_S);
+        setUntil(Date.now() + (r.retryAfter ?? COOLDOWN_S) * 1000);
       } else if (r.error === "no-parent-email") {
         setNote("No parent email on file.");
       } else {

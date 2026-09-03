@@ -1,5 +1,3 @@
-/* eslint-disable @typescript-eslint/no-require-imports -- CommonJS admin
-   script, run with plain `node`, like everything else in scripts/. */
 // Push every existing application and every approved member into HubSpot.
 //
 // Run it once after scripts/hubspot-setup.js, and any time you suspect the CRM

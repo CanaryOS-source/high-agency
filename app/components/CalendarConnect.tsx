@@ -4,7 +4,7 @@
    calendar is connected, and the button that connects or disconnects it.
    Sessions and check-ins get their Meet room from here. */
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, useSyncExternalStore } from "react";
 import { calendarStatus, connectCalendar, disconnectCalendar, type CalendarStatus } from "../lib/api";
 import { CalendarIcon, CheckIcon } from "./ui";
 
@@ -27,25 +27,45 @@ export function useCalendarStatus(): {
   return { status, refresh: () => setTick((t) => t + 1) };
 }
 
+/** The `?calendar=` value this page load came back from Google with. Latched
+ *  at module scope on first read so it survives the history rewrite below —
+ *  the URL is cleared, but the message it produced stays on screen until the
+ *  next real navigation. Also keeps the snapshot stable, which
+ *  useSyncExternalStore requires. */
+let landedWith: string | null = null;
+
+function readLanded(): string {
+  if (landedWith === null) {
+    landedWith = new URL(window.location.href).searchParams.get("calendar") ?? "";
+  }
+  return landedWith;
+}
+
 /** What the browser came back with after the OAuth round trip, read from the
- *  URL once and then cleared so a reload doesn't repeat the message. */
+ *  URL once and then cleared so a reload doesn't repeat the message. Read
+ *  through useSyncExternalStore rather than an effect: the URL is an external
+ *  store, and the server snapshot ("") keeps hydration honest. */
 function useReturnFlash(): string {
-  const [flash, setFlash] = useState("");
+  const landed = useSyncExternalStore(
+    () => () => {}, // fixed for the life of the page load
+    readLanded,
+    () => ""
+  );
+
   useEffect(() => {
+    if (!landed) return;
     const url = new URL(window.location.href);
-    const v = url.searchParams.get("calendar");
-    if (!v) return;
-    setFlash(
-      v === "connected"
-        ? "Google Calendar connected."
-        : v === "denied"
-          ? "No access was granted — nothing changed."
-          : "Couldn't connect. Try again."
-    );
     url.searchParams.delete("calendar");
     window.history.replaceState({}, "", url.pathname + url.search);
-  }, []);
-  return flash;
+  }, [landed]);
+
+  return landed === "connected"
+    ? "Google Calendar connected."
+    : landed === "denied"
+      ? "No access was granted — nothing changed."
+      : landed
+        ? "Couldn't connect. Try again."
+        : "";
 }
 
 export function CalendarConnect({

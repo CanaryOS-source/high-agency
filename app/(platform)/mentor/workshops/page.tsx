@@ -60,7 +60,7 @@ export default function MentorWorkshopsPage() {
 
   const [today] = useState(() => new Date());
   const [weekStart, setWeekStart] = useState(() => startOfWeek(new Date()));
-  const [workshops, setWorkshops] = useState<Workshop[] | null>(null);
+  const [snap, setSnap] = useState<{ weekKey: number; items: Workshop[] } | null>(null);
 
   // null = not editing, "" = composing a new one, otherwise a workshop id.
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -74,11 +74,18 @@ export default function MentorWorkshopsPage() {
   );
   const weekEnd = useMemo(() => addDays(weekStart, 7), [weekStart]);
 
+  // Tagged with the week it covers, so paging to a new week reads as "loading"
+  // at render instead of needing an effect to blank the previous week first.
+  const weekKey = weekStart.getTime();
+
   useEffect(() => {
     if (!user) return;
-    setWorkshops(null);
-    return watchWorkshopsBetween(weekStart, weekEnd, setWorkshops);
-  }, [user, weekStart, weekEnd]);
+    return watchWorkshopsBetween(weekStart, weekEnd, (items) =>
+      setSnap({ weekKey, items })
+    );
+  }, [user, weekStart, weekEnd, weekKey]);
+
+  const workshops = snap && snap.weekKey === weekKey ? snap.items : null;
 
   const onDay = (d: Date) =>
     (workshops ?? [])

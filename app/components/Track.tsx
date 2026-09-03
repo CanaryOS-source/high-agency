@@ -6,7 +6,7 @@
    - TrackEditor: what the mentor works in — write the steps, order them,
      put a day on them, mark them done for the whole squad. */
 
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import type { TrackMilestone } from "../lib/types";
 import { TRACK_MAX_MILESTONES, TRACK_TITLE_MAX, TRACK_DETAIL_MAX, currentMilestone } from "../lib/types";
 import { TRACK_TEMPLATES, fromTemplate, milestoneId } from "../lib/trackTemplates";
@@ -89,20 +89,19 @@ export function TrackEditor({
   /** Persist the whole list. Rejections surface as an error line. */
   onSave: (track: TrackMilestone[]) => Promise<void>;
 }) {
-  const [draft, setDraft] = useState<TrackMilestone[]>(track ?? []);
-  const [dirty, setDirty] = useState(false);
+  // null while the mentor isn't mid-edit, so the live doc shows straight
+  // through; the first edit forks a local copy. Following the doc is a
+  // fallback at render, not an effect that writes state back on every snapshot.
+  const [edits, setEdits] = useState<TrackMilestone[] | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [open, setOpen] = useState<string | null>(null);
 
-  // Follow the live doc while the mentor isn't mid-edit.
-  useEffect(() => {
-    if (!dirty) setDraft(track ?? []);
-  }, [track, dirty]);
+  const draft = edits ?? track ?? [];
+  const dirty = edits !== null;
 
   function edit(next: TrackMilestone[]) {
-    setDraft(next);
-    setDirty(true);
+    setEdits(next);
   }
 
   function patch(id: string, p: Partial<TrackMilestone>) {
@@ -136,8 +135,7 @@ export function TrackEditor({
         }))
         .filter((m) => m.title);
       await onSave(clean);
-      setDraft(clean);
-      setDirty(false);
+      setEdits(null);
     } catch {
       setError("Couldn't save the track. Try again.");
     } finally {
@@ -279,10 +277,7 @@ export function TrackEditor({
             <button
               type="button"
               className="btn btn--ghost"
-              onClick={() => {
-                setDraft(track ?? []);
-                setDirty(false);
-              }}
+              onClick={() => setEdits(null)}
               disabled={busy}
             >
               Discard

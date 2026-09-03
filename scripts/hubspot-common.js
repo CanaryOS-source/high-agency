@@ -1,5 +1,3 @@
-/* eslint-disable @typescript-eslint/no-require-imports -- CommonJS admin
-   script, run with plain `node`, like everything else in scripts/. */
 // Shared plumbing for the local admin scripts that talk to the app's own
 // TypeScript modules — scripts/hubspot-*.js and scripts/staff-referrals.js.
 // Local admin tooling only.

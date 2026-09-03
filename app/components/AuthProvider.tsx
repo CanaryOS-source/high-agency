@@ -24,20 +24,26 @@ const AuthContext = createContext<AuthState | undefined>(undefined);
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null | undefined>(undefined);
-  const [profile, setProfile] = useState<Profile | null | undefined>(undefined);
+  // Tagged with the uid it belongs to, so "whose profile is this?" is answered
+  // by a comparison at render rather than by clearing state in an effect —
+  // switching accounts can never surface the previous user's profile.
+  const [snap, setSnap] = useState<{ uid: string; profile: Profile | null } | null>(null);
 
   useEffect(() => {
-    return onAuthStateChanged(getFirebaseAuth(), (u) => {
-      setUser(u);
-      if (!u) setProfile(null);
-    });
+    return onAuthStateChanged(getFirebaseAuth(), setUser);
   }, []);
 
   useEffect(() => {
     if (!user) return;
-    setProfile(undefined);
-    return watchProfile(user.uid, setProfile);
+    const uid = user.uid;
+    return watchProfile(uid, (p) => setSnap({ uid, profile: p }));
   }, [user]);
+
+  const profile: Profile | null | undefined =
+    user === undefined ? undefined
+    : user === null ? null
+    : snap?.uid === user.uid ? snap.profile
+    : undefined;
 
   const logout = () => signOut(getFirebaseAuth());
 
